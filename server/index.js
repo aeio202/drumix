@@ -1,6 +1,7 @@
 const { Server } = require('socket.io');
 
-const io = new Server(3000, {
+const PORT = process.env.PORT || 3000;
+const io = new Server(PORT, {
   cors: { origin: '*' },
 });
 
@@ -103,4 +104,4 @@ io.on('connection', (socket) => {
   });
 });
 
-console.log('Drumix server running on port 3000');
+console.log(`Drumix server running on port ${PORT}`);
