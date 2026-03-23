@@ -81,6 +81,17 @@ export default function ConvoyScreen() {
           setMyLocation(myLoc);
           myLocationRef.current = myLoc;
           socket.emit('gps-update', { code, ...myLoc });
+          // Trim route behind user
+          setRouteCoords((prev) => {
+            if (prev.length < 2) return prev;
+            let closest = 0;
+            let minDist = Infinity;
+            for (let i = 0; i < prev.length; i++) {
+              const d = Math.pow(prev[i].latitude - myLoc.lat, 2) + Math.pow(prev[i].longitude - myLoc.lng, 2);
+              if (d < minDist) { minDist = d; closest = i; }
+            }
+            return prev.slice(closest);
+          });
         },
       );
     };
@@ -155,13 +166,25 @@ export default function ConvoyScreen() {
       });
     };
 
+    const ensureMic = async () => {
+      if (!localStreamRef.current) {
+        try {
+          const stream = await startLocalAudio();
+          localStreamRef.current = stream;
+          setVoiceActive(true);
+        } catch {}
+      }
+    };
+
     const onVoiceReady = async ({ from }: { from: string }) => {
+      await ensureMic();
       if (localStreamRef.current) {
         try { await createOffer(from, () => {}); } catch {}
       }
     };
 
     const onWebrtcOffer = async ({ from, offer }: { from: string; offer: any }) => {
+      await ensureMic();
       try { await handleOffer(from, offer, () => {}); } catch {}
     };
 
