@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import MapView, { Marker, Polyline, LatLng } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { socket } from '@/lib/socket';
+import VolumeManager from 'react-native-volume-manager';
 import {
   startLocalAudio,
   createOffer,
@@ -43,6 +44,17 @@ export default function ConvoyScreen() {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const sliderWidthRef = useRef(0);
+
+  // Sync volume slider with system volume
+  useEffect(() => {
+    VolumeManager.getVolume().then((result) => {
+      setVolume(typeof result === 'number' ? result : result.volume);
+    });
+    const listener = VolumeManager.addVolumeListener((result) => {
+      setVolume(result.volume);
+    });
+    return () => listener.remove();
+  }, []);
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
   const [destination, setDestination] = useState<LatLng | null>(null);
@@ -235,7 +247,7 @@ export default function ConvoyScreen() {
     router.replace('/');
   };
 
-  const GOOGLE_API_KEY = 'AIzaSyC5mSXs_x0PFEgHAUKEtLb2GT7r5iMVuW0';
+  const GOOGLE_API_KEY = 'AIzaSyB8dbdwpo3P6p06OvefGjsBSa-J7pzy-Rk';
 
   const fetchRoute = async (origin: LatLng, dest: LatLng) => {
     try {
@@ -246,9 +258,11 @@ export default function ConvoyScreen() {
       if (data.routes?.length > 0) {
         const points = decodePolyline(data.routes[0].overview_polyline.points);
         setRouteCoords(points);
+      } else {
+        Alert.alert('Rută', `Status: ${data.status}\n${data.error_message || 'No routes found'}`);
       }
-    } catch {
-      Alert.alert('Eroare', 'Nu s-a putut calcula ruta');
+    } catch (e: any) {
+      Alert.alert('Eroare', e.message || 'Nu s-a putut calcula ruta');
     }
   };
 
@@ -396,10 +410,12 @@ export default function ConvoyScreen() {
               onResponderGrant={(e) => {
                 const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
                 setVolume(val);
+                VolumeManager.setVolume(val, { showUI: false });
               }}
               onResponderMove={(e) => {
                 const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
                 setVolume(val);
+                VolumeManager.setVolume(val, { showUI: false });
               }}
             >
               <View style={[styles.sliderFill, { width: `${volume * 100}%` }]} />
