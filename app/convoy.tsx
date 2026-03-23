@@ -1,7 +1,7 @@
 import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, Polyline, LatLng } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { socket } from '@/lib/socket';
 import {
@@ -12,6 +12,21 @@ import {
   handleIceCandidate,
   closeAllPeers,
 } from '@/lib/webrtc';
+
+function decodePolyline(encoded: string): LatLng[] {
+  const points: LatLng[] = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let b, shift = 0, result = 0;
+    do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    points.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+  }
+  return points;
+}
 
 type MemberLocation = {
   lat: number;
@@ -30,6 +45,9 @@ export default function ConvoyScreen() {
   const sliderWidthRef = useRef(0);
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
+  const [destination, setDestination] = useState<LatLng | null>(null);
+  const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
+  const myLocationRef = useRef<MemberLocation | null>(null);
   const localStreamRef = useRef<any>(null);
   const mapRef = useRef<MapView>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -60,6 +78,7 @@ export default function ConvoyScreen() {
             heading: loc.coords.heading || 0,
           };
           setMyLocation(myLoc);
+          myLocationRef.current = myLoc;
           socket.emit('gps-update', { code, ...myLoc });
         },
       );
@@ -153,12 +172,21 @@ export default function ConvoyScreen() {
       try { await handleIceCandidate(from, candidate); } catch {}
     };
 
+    const onDestination = (data: { lat: number; lng: number }) => {
+      const dest = { latitude: data.lat, longitude: data.lng };
+      setDestination(dest);
+      if (myLocationRef.current) {
+        fetchRouteFromRef(dest);
+      }
+    };
+
     socket.on('member-joined', onMemberJoined);
     socket.on('member-left', onMemberLeft);
     socket.on('voice-ready', onVoiceReady);
     socket.on('webrtc-offer', onWebrtcOffer);
     socket.on('webrtc-answer', onWebrtcAnswer);
     socket.on('webrtc-ice-candidate', onIceCandidate);
+    socket.on('destination-set', onDestination);
 
     return () => {
       socket.off('member-joined', onMemberJoined);
@@ -167,6 +195,7 @@ export default function ConvoyScreen() {
       socket.off('webrtc-offer', onWebrtcOffer);
       socket.off('webrtc-answer', onWebrtcAnswer);
       socket.off('webrtc-ice-candidate', onIceCandidate);
+      socket.off('destination-set', onDestination);
       closeAllPeers();
     };
   }, []);
@@ -204,6 +233,40 @@ export default function ConvoyScreen() {
     locationSubRef.current?.remove();
     socket.disconnect();
     router.replace('/');
+  };
+
+  const GOOGLE_API_KEY = 'AIzaSyC5mSXs_x0PFEgHAUKEtLb2GT7r5iMVuW0';
+
+  const fetchRoute = async (origin: LatLng, dest: LatLng) => {
+    try {
+      const res = await fetch(
+        `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${dest.latitude},${dest.longitude}&mode=driving&key=${GOOGLE_API_KEY}`
+      );
+      const data = await res.json();
+      if (data.routes?.length > 0) {
+        const points = decodePolyline(data.routes[0].overview_polyline.points);
+        setRouteCoords(points);
+      }
+    } catch {
+      Alert.alert('Eroare', 'Nu s-a putut calcula ruta');
+    }
+  };
+
+  const fetchRouteFromRef = (dest: LatLng) => {
+    if (myLocationRef.current) {
+      fetchRoute({ latitude: myLocationRef.current.lat, longitude: myLocationRef.current.lng }, dest);
+    }
+  };
+
+  const handleLongPress = (e: any) => {
+    if (isLeader !== 'true') return;
+    const coord = e.nativeEvent.coordinate;
+    const dest = { latitude: coord.latitude, longitude: coord.longitude };
+    setDestination(dest);
+    if (myLocation) {
+      fetchRoute({ latitude: myLocation.lat, longitude: myLocation.lng }, dest);
+    }
+    socket.emit('set-destination', { code, lat: dest.latitude, lng: dest.longitude });
   };
 
   const centerOnMe = () => {
@@ -256,6 +319,8 @@ export default function ConvoyScreen() {
           longitudeDelta: 0.01,
         }}
         showsUserLocation={false}
+        toolbarEnabled={false}
+        onLongPress={handleLongPress}
       >
         {/* My marker */}
         {myLocation && (
@@ -283,6 +348,23 @@ export default function ConvoyScreen() {
             <CarIcon color="#4CAF50" />
           </Marker>
         ))}
+        {/* Route polyline */}
+        {routeCoords.length > 0 && (
+          <Polyline
+            coordinates={routeCoords}
+            strokeColor="#f4a000"
+            strokeWidth={4}
+          />
+        )}
+
+        {/* Destination marker */}
+        {destination && (
+          <Marker
+            coordinate={destination}
+            title="Destinație"
+            pinColor="#ff4444"
+          />
+        )}
       </MapView>
 
       {/* Top overlay — code + members */}

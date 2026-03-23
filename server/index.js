@@ -85,6 +85,14 @@ io.on('connection', (socket) => {
     console.log(`[convoy] ${socket.id} rejoined ${code}`);
   });
 
+  socket.on('set-destination', ({ code, lat, lng }) => {
+    const convoy = convoys.get(code);
+    if (!convoy || convoy.leader !== socket.id) return;
+    convoy.destination = { lat, lng };
+    io.in(code).emit('destination-set', { lat, lng });
+    console.log(`[convoy] ${code} destination set: ${lat}, ${lng}`);
+  });
+
   socket.on('start-convoy', (code) => {
     const convoy = convoys.get(code);
     if (!convoy || convoy.leader !== socket.id) return;
