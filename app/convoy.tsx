@@ -4,7 +4,6 @@ import { useEffect, useState, useRef } from 'react';
 import MapView, { Marker, Polyline, LatLng } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { socket } from '@/lib/socket';
-import VolumeManager from 'react-native-volume-manager';
 import {
   startLocalAudio,
   createOffer,
@@ -45,16 +44,6 @@ export default function ConvoyScreen() {
   const [volume, setVolume] = useState(1);
   const sliderWidthRef = useRef(0);
 
-  // Sync volume slider with system volume
-  useEffect(() => {
-    VolumeManager.getVolume().then((result) => {
-      setVolume(typeof result === 'number' ? result : result.volume);
-    });
-    const listener = VolumeManager.addVolumeListener((result) => {
-      setVolume(result.volume);
-    });
-    return () => listener.remove();
-  }, []);
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
   const [destination, setDestination] = useState<LatLng | null>(null);
@@ -410,12 +399,10 @@ export default function ConvoyScreen() {
               onResponderGrant={(e) => {
                 const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
                 setVolume(val);
-                VolumeManager.setVolume(val, { showUI: false });
               }}
               onResponderMove={(e) => {
                 const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
                 setVolume(val);
-                VolumeManager.setVolume(val, { showUI: false });
               }}
             >
               <View style={[styles.sliderFill, { width: `${volume * 100}%` }]} />
