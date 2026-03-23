@@ -75,6 +75,16 @@ io.on('connection', (socket) => {
     io.to(to).emit('webrtc-ice-candidate', { from: socket.id, candidate });
   });
 
+  socket.on('rejoin-convoy', (code) => {
+    const convoy = convoys.get(code);
+    if (!convoy) return;
+    if (!convoy.members.includes(socket.id)) {
+      convoy.members.push(socket.id);
+    }
+    socket.join(code);
+    console.log(`[convoy] ${socket.id} rejoined ${code}`);
+  });
+
   socket.on('start-convoy', (code) => {
     const convoy = convoys.get(code);
     if (!convoy || convoy.leader !== socket.id) return;

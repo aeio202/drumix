@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
 import MapView, { Marker } from 'react-native-maps';
@@ -26,6 +26,8 @@ export default function ConvoyScreen() {
   const [members, setMembers] = useState(isLeader === 'true' ? 1 : 2);
   const [voiceActive, setVoiceActive] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const sliderWidthRef = useRef(0);
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
   const localStreamRef = useRef<any>(null);
@@ -81,6 +83,45 @@ export default function ConvoyScreen() {
       socket.off('gps-update', onGpsUpdate);
     };
   }, []);
+
+  // Auto-reconnect when app comes back to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (state) => {
+      if (state === 'active') {
+        // Reconnect socket if disconnected
+        if (!socket.connected) {
+          socket.connect();
+          socket.once('connect', () => {
+            socket.emit('rejoin-convoy', code);
+          });
+        }
+        // Restart GPS if stopped
+        if (!locationSubRef.current) {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === 'granted') {
+            locationSubRef.current = await Location.watchPositionAsync(
+              { accuracy: Location.Accuracy.High, timeInterval: 2000, distanceInterval: 5 },
+              (loc) => {
+                const myLoc = {
+                  lat: loc.coords.latitude,
+                  lng: loc.coords.longitude,
+                  speed: loc.coords.speed || 0,
+                  heading: loc.coords.heading || 0,
+                };
+                setMyLocation(myLoc);
+                socket.emit('gps-update', { code, ...myLoc });
+              },
+            );
+          }
+        }
+      } else if (state === 'background') {
+        locationSubRef.current?.remove();
+        locationSubRef.current = null;
+      }
+    });
+
+    return () => sub.remove();
+  }, [code]);
 
   // Voice chat + members
   useEffect(() => {
@@ -176,6 +217,31 @@ export default function ConvoyScreen() {
     }
   };
 
+  const fitAll = () => {
+    if (!mapRef.current) return;
+    const allLocs: { lat: number; lng: number }[] = [];
+    if (myLocation) allLocs.push(myLocation);
+    otherLocations.forEach((loc) => allLocs.push(loc));
+    if (allLocs.length === 0) return;
+    if (allLocs.length === 1) {
+      centerOnMe();
+      return;
+    }
+    const lats = allLocs.map((l) => l.lat);
+    const lngs = allLocs.map((l) => l.lng);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    const padding = 0.005;
+    mapRef.current.animateToRegion({
+      latitude: (minLat + maxLat) / 2,
+      longitude: (minLng + maxLng) / 2,
+      latitudeDelta: Math.max(maxLat - minLat + padding * 2, 0.005),
+      longitudeDelta: Math.max(maxLng - minLng + padding * 2, 0.005),
+    }, 500);
+  };
+
   return (
     <View style={styles.container}>
       {/* Map */}
@@ -196,8 +262,12 @@ export default function ConvoyScreen() {
           <Marker
             coordinate={{ latitude: myLocation.lat, longitude: myLocation.lng }}
             title="Tu"
-            pinColor="#f4a000"
-          />
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat
+            rotation={myLocation.heading}
+          >
+            <CarIcon color="#f4a000" />
+          </Marker>
         )}
 
         {/* Other members */}
@@ -206,8 +276,12 @@ export default function ConvoyScreen() {
             key={id}
             coordinate={{ latitude: loc.lat, longitude: loc.lng }}
             title={`Membru ${id.slice(0, 4)}`}
-            pinColor="#4CAF50"
-          />
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat
+            rotation={loc.heading}
+          >
+            <CarIcon color="#4CAF50" />
+          </Marker>
         ))}
       </MapView>
 
@@ -219,35 +293,71 @@ export default function ConvoyScreen() {
         <Text style={styles.membersText}>{members} {members === 1 ? 'membru' : 'membri'}</Text>
       </View>
 
-      {/* Center on me button */}
+      {/* Map buttons */}
       <TouchableOpacity style={styles.centerButton} onPress={centerOnMe}>
         <Text style={styles.centerIcon}>📍</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.fitAllButton} onPress={fitAll}>
+        <Text style={styles.centerIcon}>👥</Text>
       </TouchableOpacity>
 
       {/* Bottom controls */}
       <View style={styles.bottomOverlay}>
-        <TouchableOpacity
-          style={[styles.controlButton, voiceActive && styles.controlButtonActive]}
-          onPress={toggleVoice}
-        >
-          <Text style={styles.controlIcon}>{voiceActive ? '🎙️' : '🔇'}</Text>
-          <Text style={styles.controlLabel}>{voiceActive ? 'ON' : 'OFF'}</Text>
-        </TouchableOpacity>
-
+        {/* Volume slider — only when voice is active */}
         {voiceActive && (
-          <TouchableOpacity
-            style={[styles.controlButton, muted && styles.controlButtonMuted]}
-            onPress={toggleMute}
-          >
-            <Text style={styles.controlIcon}>{muted ? '🔇' : '🔊'}</Text>
-            <Text style={styles.controlLabel}>{muted ? 'Mute' : 'Unmute'}</Text>
-          </TouchableOpacity>
+          <View style={styles.volumeRow}>
+            <View
+              style={styles.sliderTrack}
+              onLayout={(e) => { sliderWidthRef.current = e.nativeEvent.layout.width; }}
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderGrant={(e) => {
+                const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
+                setVolume(val);
+              }}
+              onResponderMove={(e) => {
+                const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
+                setVolume(val);
+              }}
+            >
+              <View style={[styles.sliderFill, { width: `${volume * 100}%` }]} />
+              <View style={[styles.sliderThumb, { left: `${volume * 100}%` }]} />
+            </View>
+          </View>
         )}
 
-        <TouchableOpacity style={styles.leaveBtn} onPress={leaveConvoy}>
-          <Text style={styles.controlIcon}>🚪</Text>
-          <Text style={styles.leaveLabel}>Ieși</Text>
-        </TouchableOpacity>
+        <View style={styles.buttonsRow}>
+          {/* Voice toggle */}
+          <TouchableOpacity
+            style={[styles.controlButton, voiceActive && styles.controlButtonActive]}
+            onPress={toggleVoice}
+          >
+            <Text style={styles.controlIcon}>{voiceActive ? '🎙️' : '🔇'}</Text>
+            <Text style={styles.controlLabel}>{voiceActive ? 'Voice' : 'OFF'}</Text>
+          </TouchableOpacity>
+
+          {/* Mute — Discord style */}
+          {voiceActive && (
+            <TouchableOpacity
+              style={[styles.controlButton, muted ? styles.controlButtonMuted : styles.controlButtonActive]}
+              onPress={toggleMute}
+            >
+              <View style={styles.micContainer}>
+                <Text style={styles.controlIcon}>🎤</Text>
+                {muted && <View style={styles.micSlash} />}
+              </View>
+              <Text style={[styles.controlLabel, muted && { color: '#ff4444' }]}>
+                {muted ? 'Muted' : 'Mic'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Leave */}
+          <TouchableOpacity style={styles.leaveBtn} onPress={leaveConvoy}>
+            <Text style={styles.controlIcon}>🚪</Text>
+            <Text style={styles.leaveLabel}>Ieși</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
@@ -299,6 +409,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   centerIcon: { fontSize: 22 },
+  fitAllButton: {
+    position: 'absolute',
+    right: 16,
+    bottom: 200,
+    backgroundColor: 'rgba(15, 15, 15, 0.85)',
+    borderRadius: 25,
+    width: 50,
+    height: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: '#333',
+    borderWidth: 1,
+  },
   bottomOverlay: {
     position: 'absolute',
     bottom: 40,
@@ -331,4 +454,117 @@ const styles = StyleSheet.create({
     minWidth: 70,
   },
   leaveLabel: { color: '#ff4444', fontSize: 11 },
+  volumeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    backgroundColor: 'rgba(15, 15, 15, 0.9)',
+    borderRadius: 12,
+    padding: 14,
+    borderColor: '#333',
+    borderWidth: 1,
+  },
+  volumeIcon: { fontSize: 18, marginRight: 10 },
+  sliderTrack: {
+    flex: 1,
+    height: 8,
+    backgroundColor: '#444',
+    borderRadius: 4,
+    justifyContent: 'center',
+  },
+  sliderFill: {
+    height: '100%',
+    backgroundColor: '#f4a000',
+    borderRadius: 3,
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#f4a000',
+    marginLeft: -9,
+    top: -6,
+  },
+  buttonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  micContainer: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  micSlash: {
+    position: 'absolute',
+    width: 3,
+    height: 30,
+    backgroundColor: '#ff4444',
+    borderRadius: 2,
+    transform: [{ rotate: '135deg' }],
+  },
+});
+
+function CarIcon({ color }: { color: string }) {
+  return (
+    <View style={carStyles.wrapper}>
+      {/* Car body */}
+      <View style={[carStyles.body, { backgroundColor: color }]}>
+        {/* Windshield */}
+        <View style={carStyles.windshield} />
+        {/* Rear window */}
+        <View style={carStyles.rearWindow} />
+      </View>
+      {/* Left wheels */}
+      <View style={[carStyles.wheel, carStyles.wheelTopLeft]} />
+      <View style={[carStyles.wheel, carStyles.wheelBottomLeft]} />
+      {/* Right wheels */}
+      <View style={[carStyles.wheel, carStyles.wheelTopRight]} />
+      <View style={[carStyles.wheel, carStyles.wheelBottomRight]} />
+    </View>
+  );
+}
+
+const carStyles = StyleSheet.create({
+  wrapper: {
+    width: 24,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  body: {
+    width: 18,
+    height: 36,
+    borderRadius: 6,
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  windshield: {
+    width: 12,
+    height: 8,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    borderRadius: 2,
+    marginTop: 5,
+  },
+  rearWindow: {
+    width: 12,
+    height: 6,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: 2,
+    marginTop: 8,
+  },
+  wheel: {
+    position: 'absolute',
+    width: 5,
+    height: 8,
+    backgroundColor: '#222',
+    borderRadius: 2,
+  },
+  wheelTopLeft: { left: 0, top: 4 },
+  wheelBottomLeft: { left: 0, bottom: 4 },
+  wheelTopRight: { right: 0, top: 4 },
+  wheelBottomRight: { right: 0, bottom: 4 },
 });
