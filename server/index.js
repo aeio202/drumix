@@ -97,7 +97,7 @@ io.on('connection', (socket) => {
     const convoy = convoys.get(code);
     if (!convoy || convoy.leader !== socket.id) return;
     console.log(`[convoy] ${code} started by leader`);
-    io.in(code).emit('convoy-started', { code });
+    io.in(code).emit('convoy-started', { code, count: convoy.members.length });
   });
 
   socket.on('voice-ready', (code) => {

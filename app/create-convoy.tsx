@@ -20,8 +20,8 @@ export default function CreateConvoyScreen() {
     const onMemberJoined = (data: { count: number }) => setMembers(data.count);
     const onMemberLeft = (data: { count: number }) => setMembers(data.count);
     const onError = () => setError('Nu s-a putut conecta la server');
-    const onConvoyStarted = ({ code: c }: { code: string }) => {
-      router.replace({ pathname: '/convoy', params: { code: c, isLeader: 'true' } });
+    const onConvoyStarted = ({ code: c, count }: { code: string; count: number }) => {
+      router.replace({ pathname: '/convoy', params: { code: c, isLeader: 'true', count: String(count) } });
     };
 
     socket.on('connect', onConnect);

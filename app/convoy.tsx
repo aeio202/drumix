@@ -37,8 +37,8 @@ type MemberLocation = {
 
 export default function ConvoyScreen() {
   const router = useRouter();
-  const { code, isLeader } = useLocalSearchParams<{ code: string; isLeader: string }>();
-  const [members, setMembers] = useState(isLeader === 'true' ? 1 : 2);
+  const { code, isLeader, count: initialCount } = useLocalSearchParams<{ code: string; isLeader: string; count: string }>();
+  const [members, setMembers] = useState(parseInt(initialCount) || 1);
   const [voiceActive, setVoiceActive] = useState(false);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -78,8 +78,17 @@ export default function ConvoyScreen() {
             speed: loc.coords.speed || 0,
             heading: loc.coords.heading || 0,
           };
+          const isFirst = myLocationRef.current === null;
           setMyLocation(myLoc);
           myLocationRef.current = myLoc;
+          if (isFirst && mapRef.current) {
+            mapRef.current.animateToRegion({
+              latitude: myLoc.lat,
+              longitude: myLoc.lng,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            }, 300);
+          }
           socket.emit('gps-update', { code, ...myLoc });
           // Trim route behind user
           setRouteCoords((prev) => {

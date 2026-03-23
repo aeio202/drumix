@@ -11,8 +11,8 @@ export default function JoinConvoyScreen() {
   const [members, setMembers] = useState(0);
 
   useEffect(() => {
-    const onConvoyStarted = ({ code: c }: { code: string }) => {
-      router.replace({ pathname: '/convoy', params: { code: c, isLeader: 'false' } });
+    const onConvoyStarted = ({ code: c, count }: { code: string; count: number }) => {
+      router.replace({ pathname: '/convoy', params: { code: c, isLeader: 'false', count: String(count) } });
     };
     const onMemberJoined = (data: { count: number }) => setMembers(data.count);
     const onMemberLeft = (data: { count: number }) => setMembers(data.count);
