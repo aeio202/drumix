@@ -15,6 +15,7 @@ const ICE_SERVERS = {
 };
 
 const peers = new Map<string, RTCPeerConnection>();
+const remoteStreams = new Map<string, MediaStream>();
 let localStream: MediaStream | null = null;
 
 export async function startLocalAudio(): Promise<MediaStream> {
@@ -65,6 +66,7 @@ export function createPeerConnection(
   // Handle remote stream
   pc.ontrack = (event: any) => {
     if (event.streams && event.streams[0]) {
+      remoteStreams.set(remoteId, event.streams[0]);
       onRemoteStream(remoteId, event.streams[0]);
     }
   };
@@ -105,8 +107,19 @@ export async function handleIceCandidate(fromId: string, candidate: any) {
   }
 }
 
+export function setAllRemoteVolume(volume: number) {
+  remoteStreams.forEach((stream) => {
+    stream.getAudioTracks().forEach((track: any) => {
+      if (typeof track._setVolume === 'function') {
+        track._setVolume(volume);
+      }
+    });
+  });
+}
+
 export function closeAllPeers() {
   peers.forEach((pc) => pc.close());
   peers.clear();
+  remoteStreams.clear();
   stopLocalAudio();
 }

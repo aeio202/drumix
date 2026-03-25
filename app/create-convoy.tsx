@@ -11,9 +11,17 @@ export default function CreateConvoyScreen() {
 
   useEffect(() => {
     const onConnect = () => {
-      socket.emit('create-convoy', (res: { ok: boolean; code: string }) => {
-        if (res.ok) setCode(res.code);
-        else setError('Nu s-a putut crea convoiul');
+      socket.emit('create-convoy', (res: unknown) => {
+        if (!res || typeof res !== 'object' || !('ok' in res)) {
+          setError('Răspuns invalid de la server');
+          return;
+        }
+        const r = res as { ok: boolean; code?: string; error?: string };
+        if (r.ok && typeof r.code === 'string') {
+          setCode(r.code);
+        } else {
+          setError(typeof r.error === 'string' ? r.error : 'Nu s-a putut crea convoiul');
+        }
       });
     };
 

@@ -1,7 +1,18 @@
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { LogBox } from 'react-native';
 import 'react-native-reanimated';
+
+// Suppress keep-awake error from Expo dev client
+LogBox.ignoreLogs(['Unable to activate keep awake']);
+
+// Prevent unhandled promise rejection crash
+const originalHandler = ErrorUtils.getGlobalHandler();
+ErrorUtils.setGlobalHandler((error, isFatal) => {
+  if (error?.message?.includes('keep awake')) return;
+  originalHandler(error, isFatal);
+});
 
 const theme = {
   ...DarkTheme,

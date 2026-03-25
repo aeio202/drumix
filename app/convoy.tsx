@@ -3,6 +3,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
 import MapView, { Marker, Polyline, LatLng } from 'react-native-maps';
 import * as Location from 'expo-location';
+import Constants from 'expo-constants';
 import { socket } from '@/lib/socket';
 import {
   startLocalAudio,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/webrtc';
 
 function decodePolyline(encoded: string): LatLng[] {
+  if (!encoded || typeof encoded !== 'string') return [];
   const points: LatLng[] = [];
   let index = 0, lat = 0, lng = 0;
   while (index < encoded.length) {
@@ -35,14 +37,17 @@ type MemberLocation = {
   heading: number;
 };
 
+const GOOGLE_API_KEY = (Constants.expoConfig?.extra?.googleDirectionsApiKey as string) ?? '';
+
 export default function ConvoyScreen() {
   const router = useRouter();
   const { code, isLeader, count: initialCount } = useLocalSearchParams<{ code: string; isLeader: string; count: string }>();
-  const [members, setMembers] = useState(parseInt(initialCount) || 1);
+  const [members, setMembers] = useState(() => {
+    const n = parseInt(initialCount ?? '', 10);
+    return isNaN(n) ? 1 : n;
+  });
   const [voiceActive, setVoiceActive] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
-  const sliderWidthRef = useRef(0);
 
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
@@ -55,6 +60,7 @@ export default function ConvoyScreen() {
 
   // GPS tracking
   useEffect(() => {
+    if (!code) return;
     let mounted = true;
 
     const startTracking = async () => {
@@ -64,7 +70,7 @@ export default function ConvoyScreen() {
         return;
       }
 
-      locationSubRef.current = await Location.watchPositionAsync(
+      const sub = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
           timeInterval: 2000,
@@ -81,7 +87,7 @@ export default function ConvoyScreen() {
           const isFirst = myLocationRef.current === null;
           setMyLocation(myLoc);
           myLocationRef.current = myLoc;
-          if (isFirst && mapRef.current) {
+          if (isFirst && mounted && mapRef.current) {
             mapRef.current.animateToRegion({
               latitude: myLoc.lat,
               longitude: myLoc.lng,
@@ -103,6 +109,13 @@ export default function ConvoyScreen() {
           });
         },
       );
+
+      if (!mounted) {
+        // Component unmounted while watchPositionAsync was pending — remove immediately
+        sub.remove();
+        return;
+      }
+      locationSubRef.current = sub;
     };
 
     startTracking();
@@ -115,27 +128,33 @@ export default function ConvoyScreen() {
       });
     };
 
+    const onReconnect = () => {
+      socket.emit('rejoin-convoy', code);
+    };
+
     socket.on('gps-update', onGpsUpdate);
+    socket.on('connect', onReconnect);
 
     return () => {
       mounted = false;
       locationSubRef.current?.remove();
+      locationSubRef.current = null;
       socket.off('gps-update', onGpsUpdate);
+      socket.off('connect', onReconnect);
     };
-  }, []);
+  }, [code]);
 
   // Auto-reconnect when app comes back to foreground
   useEffect(() => {
+    if (!code) return;
     const sub = AppState.addEventListener('change', async (state) => {
       if (state === 'active') {
-        // Reconnect socket if disconnected
         if (!socket.connected) {
           socket.connect();
           socket.once('connect', () => {
             socket.emit('rejoin-convoy', code);
           });
         }
-        // Restart GPS if stopped
         if (!locationSubRef.current) {
           const { status } = await Location.requestForegroundPermissionsAsync();
           if (status === 'granted') {
@@ -152,6 +171,8 @@ export default function ConvoyScreen() {
                 socket.emit('gps-update', { code, ...myLoc });
               },
             );
+          } else {
+            Alert.alert('Eroare', 'Locația a fost dezactivată. Activează-o pentru a continua în convoi.');
           }
         }
       } else if (state === 'background') {
@@ -181,28 +202,51 @@ export default function ConvoyScreen() {
           const stream = await startLocalAudio();
           localStreamRef.current = stream;
           setVoiceActive(true);
-        } catch {}
+        } catch (e: any) {
+          console.error('[voice] Failed to start local audio:', e);
+          Alert.alert('Eroare', 'Nu s-a putut accesa microfonul pentru voce automată');
+        }
       }
     };
 
     const onVoiceReady = async ({ from }: { from: string }) => {
       await ensureMic();
       if (localStreamRef.current) {
-        try { await createOffer(from, () => {}); } catch {}
+        try {
+          await createOffer(from, (_id, _stream) => {
+            setVoiceActive(true);
+          });
+        } catch (e: any) {
+          console.error('[webrtc] createOffer error:', e);
+        }
       }
     };
 
     const onWebrtcOffer = async ({ from, offer }: { from: string; offer: any }) => {
       await ensureMic();
-      try { await handleOffer(from, offer, () => {}); } catch {}
+      try {
+        await handleOffer(from, offer, (_id, _stream) => {
+          setVoiceActive(true);
+        });
+      } catch (e: any) {
+        console.error('[webrtc] handleOffer error:', e);
+      }
     };
 
     const onWebrtcAnswer = async ({ from, answer }: { from: string; answer: any }) => {
-      try { await handleAnswer(from, answer); } catch {}
+      try {
+        await handleAnswer(from, answer);
+      } catch (e: any) {
+        console.error('[webrtc] handleAnswer error:', e);
+      }
     };
 
     const onIceCandidate = async ({ from, candidate }: { from: string; candidate: any }) => {
-      try { await handleIceCandidate(from, candidate); } catch {}
+      try {
+        await handleIceCandidate(from, candidate);
+      } catch (e: any) {
+        console.error('[webrtc] ICE candidate error:', e);
+      }
     };
 
     const onDestination = (data: { lat: number; lng: number }) => {
@@ -245,7 +289,8 @@ export default function ConvoyScreen() {
         localStreamRef.current = stream;
         setVoiceActive(true);
         socket.emit('voice-ready', code);
-      } catch {
+      } catch (e: any) {
+        console.error('[voice] toggleVoice error:', e);
         Alert.alert('Eroare', 'Nu s-a putut accesa microfonul');
       }
     }
@@ -268,16 +313,19 @@ export default function ConvoyScreen() {
     router.replace('/');
   };
 
-  const GOOGLE_API_KEY = 'AIzaSyB8dbdwpo3P6p06OvefGjsBSa-J7pzy-Rk';
-
   const fetchRoute = async (origin: LatLng, dest: LatLng) => {
     try {
       const res = await fetch(
         `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${dest.latitude},${dest.longitude}&mode=driving&key=${GOOGLE_API_KEY}`
       );
+      if (!res.ok) {
+        Alert.alert('Eroare', `Eroare server: ${res.status}`);
+        return;
+      }
       const data = await res.json();
       if (data.routes?.length > 0) {
-        const points = decodePolyline(data.routes[0].overview_polyline.points);
+        const polylineStr = data.routes[0]?.overview_polyline?.points;
+        const points = decodePolyline(polylineStr ?? '');
         setRouteCoords(points);
       } else {
         Alert.alert('Rută', `Status: ${data.status}\n${data.error_message || 'No routes found'}`);
@@ -339,6 +387,14 @@ export default function ConvoyScreen() {
       longitudeDelta: Math.max(maxLng - minLng + padding * 2, 0.005),
     }, 500);
   };
+
+  if (!code) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Text style={{ color: '#ff4444', fontSize: 16 }}>Eroare: cod convoi lipsă</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -420,29 +476,6 @@ export default function ConvoyScreen() {
 
       {/* Bottom controls */}
       <View style={styles.bottomOverlay}>
-        {/* Volume slider — only when voice is active */}
-        {voiceActive && (
-          <View style={styles.volumeRow}>
-            <View
-              style={styles.sliderTrack}
-              onLayout={(e) => { sliderWidthRef.current = e.nativeEvent.layout.width; }}
-              onStartShouldSetResponder={() => true}
-              onMoveShouldSetResponder={() => true}
-              onResponderGrant={(e) => {
-                const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
-                setVolume(val);
-              }}
-              onResponderMove={(e) => {
-                const val = Math.max(0, Math.min(1, e.nativeEvent.locationX / sliderWidthRef.current));
-                setVolume(val);
-              }}
-            >
-              <View style={[styles.sliderFill, { width: `${volume * 100}%` }]} />
-              <View style={[styles.sliderThumb, { left: `${volume * 100}%` }]} />
-            </View>
-          </View>
-        )}
-
         <View style={styles.buttonsRow}>
           {/* Voice toggle */}
           <TouchableOpacity
@@ -571,38 +604,6 @@ const styles = StyleSheet.create({
     minWidth: 70,
   },
   leaveLabel: { color: '#ff4444', fontSize: 11 },
-  volumeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    backgroundColor: 'rgba(15, 15, 15, 0.9)',
-    borderRadius: 12,
-    padding: 14,
-    borderColor: '#333',
-    borderWidth: 1,
-  },
-  volumeIcon: { fontSize: 18, marginRight: 10 },
-  sliderTrack: {
-    flex: 1,
-    height: 8,
-    backgroundColor: '#444',
-    borderRadius: 4,
-    justifyContent: 'center',
-  },
-  sliderFill: {
-    height: '100%',
-    backgroundColor: '#f4a000',
-    borderRadius: 3,
-  },
-  sliderThumb: {
-    position: 'absolute',
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#f4a000',
-    marginLeft: -9,
-    top: -6,
-  },
   buttonsRow: {
     flexDirection: 'row',
     justifyContent: 'center',

@@ -37,7 +37,7 @@ export default function JoinConvoyScreen() {
         setLoading(false);
         if (res.ok) {
           setJoined(true);
-          setMembers(res.count || 2);
+          setMembers(res.count ?? 2);
         } else {
           Alert.alert('Eroare', res.error || 'Nu s-a putut intra în convoi');
           socket.disconnect();
@@ -48,13 +48,13 @@ export default function JoinConvoyScreen() {
     if (socket.connected) {
       tryJoin();
     } else {
-      socket.connect();
       socket.once('connect', tryJoin);
       socket.once('connect_error', () => {
         setLoading(false);
         Alert.alert('Eroare', 'Nu s-a putut conecta la server');
         socket.disconnect();
       });
+      socket.connect();
     }
   };
 

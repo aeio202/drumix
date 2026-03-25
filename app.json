@@ -85,7 +85,8 @@
       "router": {},
       "eas": {
         "projectId": "de2f146f-c879-4ec2-8449-623d22a2feb7"
-      }
+      },
+      "googleDirectionsApiKey": "AIzaSyB8dbdwpo3P6p06OvefGjsBSa-J7pzy-Rk"
     }
   }
 }
