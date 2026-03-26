@@ -5,6 +5,7 @@ import {
   mediaDevices,
   MediaStream,
 } from 'react-native-webrtc';
+import { Platform, PermissionsAndroid } from 'react-native';
 import { socket } from './socket';
 import { addLog } from './debugLog';
 
@@ -41,6 +42,26 @@ export async function startLocalAudio(): Promise<MediaStream> {
     addLog('MIC', 'Reusing existing local stream');
     return localStream;
   }
+
+  // Request runtime mic permission on Android (dangerous permission)
+  if (Platform.OS === 'android') {
+    addLog('MIC', 'Requesting Android RECORD_AUDIO permission...');
+    const result = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      {
+        title: 'Permisiune microfon',
+        message: 'Drumix are nevoie de microfon pentru voice chat',
+        buttonPositive: 'Permite',
+        buttonNegative: 'Refuză',
+      }
+    );
+    if (result !== PermissionsAndroid.RESULTS.GRANTED) {
+      addLog('ERROR', `Mic permission denied: ${result}`);
+      throw new Error('Permisiune microfon refuzată. Mergi la Setări › Aplicații › Drumix › Permisiuni.');
+    }
+    addLog('MIC', 'Android mic permission granted');
+  }
+
   addLog('MIC', 'Requesting microphone access...');
   try {
     const stream = await mediaDevices.getUserMedia({

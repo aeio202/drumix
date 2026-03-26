@@ -16,6 +16,10 @@ export default function HomeScreen() {
       <TouchableOpacity style={styles.buttonSecondary} onPress={() => router.push('/join-convoy')}>
         <Text style={styles.buttonTextSecondary}>Alătură-te unui convoi</Text>
       </TouchableOpacity>
+
+      <TouchableOpacity style={styles.buttonVoiceTest} onPress={() => router.push('/voice-test')}>
+        <Text style={styles.buttonTextVoiceTest}>🎙️ Test voce</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -64,5 +68,20 @@ const styles = StyleSheet.create({
     color: '#f4a000',
     fontWeight: 'bold',
     fontSize: 16,
+  },
+  buttonVoiceTest: {
+    borderColor: '#555',
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 60,
+    borderRadius: 12,
+    width: '80%',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  buttonTextVoiceTest: {
+    color: '#888',
+    fontWeight: 'bold',
+    fontSize: 14,
   },
 });

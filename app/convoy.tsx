@@ -1,4 +1,5 @@
 import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
 import MapView, { Marker, Polyline, LatLng } from 'react-native-maps';
@@ -73,6 +74,9 @@ export default function ConvoyScreen() {
   const localStreamRef = useRef<any>(null);
   const mapRef = useRef<MapView>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
+
+  const insets = useSafeAreaInsets();
+  const tabBarTotalHeight = TAB_BAR_HEIGHT + insets.bottom;
 
   // Debug tab
   const [activeTab, setActiveTab] = useState<'map' | 'debug'>('map');
@@ -520,10 +524,10 @@ export default function ConvoyScreen() {
       {/* Map buttons — only visible on map tab */}
       {activeTab === 'map' && (
         <>
-          <TouchableOpacity style={styles.centerButton} onPress={centerOnMe}>
+          <TouchableOpacity style={[styles.centerButton, { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 10 }]} onPress={centerOnMe}>
             <Text style={styles.centerIcon}>📍</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.fitAllButton} onPress={fitAll}>
+          <TouchableOpacity style={[styles.fitAllButton, { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 68 }]} onPress={fitAll}>
             <Text style={styles.centerIcon}>👥</Text>
           </TouchableOpacity>
         </>
@@ -531,7 +535,7 @@ export default function ConvoyScreen() {
 
       {/* Debug panel — shown over map when debug tab active */}
       {activeTab === 'debug' && (
-        <View style={styles.debugPanel}>
+        <View style={[styles.debugPanel, { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 6 }]}>
           <View style={styles.debugHeader}>
             <Text style={styles.debugTitle}>Debug ({debugLogs.length} logs)</Text>
             <TouchableOpacity
@@ -563,7 +567,7 @@ export default function ConvoyScreen() {
       )}
 
       {/* Bottom controls — always visible */}
-      <View style={styles.bottomOverlay}>
+      <View style={[styles.bottomOverlay, { bottom: tabBarTotalHeight + 10 }]}>
         <View style={styles.buttonsRow}>
           <TouchableOpacity
             style={[
@@ -602,7 +606,7 @@ export default function ConvoyScreen() {
       </View>
 
       {/* Tab bar */}
-      <View style={styles.tabBar}>
+      <View style={[styles.tabBar, { height: tabBarTotalHeight, paddingBottom: insets.bottom }]}>
         <TouchableOpacity
           style={[styles.tabItem, activeTab === 'map' && styles.tabItemActive]}
           onPress={() => setActiveTab('map')}
@@ -803,11 +807,10 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderBottomColor: '#111',
     borderBottomWidth: 1,
-    flexWrap: 'wrap',
   },
-  logTime: { color: '#555', fontSize: 10, fontFamily: 'monospace', marginRight: 6, minWidth: 90 },
-  logCategory: { fontSize: 10, fontWeight: 'bold', fontFamily: 'monospace', marginRight: 6, minWidth: 50 },
-  logMessage: { color: '#ccc', fontSize: 10, fontFamily: 'monospace', flex: 1 },
+  logTime: { color: '#555', fontSize: 10, marginRight: 6, width: 80 },
+  logCategory: { fontSize: 10, fontWeight: 'bold', marginRight: 6, width: 52 },
+  logMessage: { color: '#ccc', fontSize: 10, flexShrink: 1 },
 });
 
 function CarIcon({ color }: { color: string }) {

@@ -31,6 +31,7 @@ export default function RootLayout() {
         <Stack.Screen name="create-convoy" />
         <Stack.Screen name="join-convoy" />
         <Stack.Screen name="convoy" />
+        <Stack.Screen name="voice-test" />
       </Stack>
       <StatusBar style="light" />
     </ThemeProvider>
