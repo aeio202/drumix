@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, AppState, ScrollView } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState, useRef } from 'react';
 import MapView, { Marker, Polyline, LatLng } from 'react-native-maps';
@@ -13,6 +13,7 @@ import {
   handleIceCandidate,
   closeAllPeers,
 } from '@/lib/webrtc';
+import { addLog, getLogs, clearLogs, subscribeToLogs, LogEntry } from '@/lib/debugLog';
 
 function decodePolyline(encoded: string): LatLng[] {
   if (!encoded || typeof encoded !== 'string') return [];
@@ -28,6 +29,18 @@ function decodePolyline(encoded: string): LatLng[] {
     points.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
   }
   return points;
+}
+
+function categoryColor(cat: string): string {
+  switch (cat) {
+    case 'ICE': return '#00bcd4';
+    case 'VOICE': return '#4caf50';
+    case 'SOCKET': return '#ff9800';
+    case 'WEBRTC': return '#2196f3';
+    case 'ERROR': return '#f44336';
+    case 'MIC': return '#ce93d8';
+    default: return '#888';
+  }
 }
 
 type MemberLocation = {
@@ -60,6 +73,33 @@ export default function ConvoyScreen() {
   const localStreamRef = useRef<any>(null);
   const mapRef = useRef<MapView>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
+
+  // Debug tab
+  const [activeTab, setActiveTab] = useState<'map' | 'debug'>('map');
+  const [debugLogs, setDebugLogs] = useState<LogEntry[]>(() => getLogs());
+  const logScrollRef = useRef<ScrollView>(null);
+
+  // Log subscription
+  useEffect(() => {
+    const unsub = subscribeToLogs(() => {
+      setDebugLogs(getLogs());
+      setTimeout(() => logScrollRef.current?.scrollToEnd({ animated: false }), 30);
+    });
+    addLog('SOCKET', `Screen mounted — code=${code} isLeader=${isLeader} connected=${socket.connected} id=${socket.id ?? 'none'}`);
+    return unsub;
+  }, []);
+
+  // Socket connect/disconnect logging
+  useEffect(() => {
+    const onConnect = () => addLog('SOCKET', `Connected, id=${socket.id}`);
+    const onDisconnect = (reason: string) => addLog('SOCKET', `Disconnected: ${reason}`);
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+    };
+  }, []);
 
   // GPS tracking
   useEffect(() => {
@@ -114,7 +154,6 @@ export default function ConvoyScreen() {
       );
 
       if (!mounted) {
-        // Component unmounted while watchPositionAsync was pending — remove immediately
         sub.remove();
         return;
       }
@@ -132,6 +171,7 @@ export default function ConvoyScreen() {
     };
 
     const onReconnect = () => {
+      addLog('SOCKET', `Rejoining convoy ${code}`);
       socket.emit('rejoin-convoy', code);
     };
 
@@ -189,8 +229,12 @@ export default function ConvoyScreen() {
 
   // Voice chat + members
   useEffect(() => {
-    const onMemberJoined = (data: { count: number }) => setMembers(data.count);
+    const onMemberJoined = (data: { count: number }) => {
+      addLog('SOCKET', `Member joined, total=${data.count}`);
+      setMembers(data.count);
+    };
     const onMemberLeft = (data: { memberId: string; count: number }) => {
+      addLog('SOCKET', `Member left (${data.memberId.slice(0, 6)}), total=${data.count}`);
       setMembers(data.count);
       setOtherLocations((prev) => {
         const next = new Map(prev);
@@ -208,35 +252,40 @@ export default function ConvoyScreen() {
         localStreamRef.current = stream;
         return true;
       } catch (e: any) {
-        console.error('[voice] Failed to start local audio:', e);
+        addLog('ERROR', `ensureMic failed: ${e?.message ?? e}`);
         Alert.alert('Eroare', 'Nu s-a putut accesa microfonul');
         return false;
       }
     };
 
     const onVoiceReady = ({ from }: { from: string }) => {
+      addLog('VOICE', `voice-ready from ${from.slice(0, 6)} — added to remoteVoice list`);
       remoteVoiceIdsRef.current.add(from);
       setRemoteVoiceCount(remoteVoiceIdsRef.current.size);
-      // Nu auto-conectăm — userul apasă manual butonul de voice ca să se alăture
     };
 
     const onWebrtcOffer = async ({ from, offer }: { from: string; offer: any }) => {
+      addLog('VOICE', `Offer received from ${from.slice(0, 6)}`);
       const ok = await ensureMic();
       if (!ok) return;
       try {
         await handleOffer(from, offer, (_id, _stream) => {
+          addLog('VOICE', `Remote stream arrived — setting voiceActive`);
           setVoiceActive(true);
+          voiceActiveRef.current = true;
+          localStreamRef.current = localStreamRef.current; // already set
         });
       } catch (e: any) {
-        console.error('[webrtc] handleOffer error:', e);
+        addLog('ERROR', `handleOffer from ${from.slice(0, 6)}: ${e?.message ?? e}`);
       }
     };
 
     const onWebrtcAnswer = async ({ from, answer }: { from: string; answer: any }) => {
+      addLog('VOICE', `Answer received from ${from.slice(0, 6)}`);
       try {
         await handleAnswer(from, answer);
       } catch (e: any) {
-        console.error('[webrtc] handleAnswer error:', e);
+        addLog('ERROR', `handleAnswer from ${from.slice(0, 6)}: ${e?.message ?? e}`);
       }
     };
 
@@ -244,7 +293,7 @@ export default function ConvoyScreen() {
       try {
         await handleIceCandidate(from, candidate);
       } catch (e: any) {
-        console.error('[webrtc] ICE candidate error:', e);
+        addLog('ERROR', `onIceCandidate from ${from.slice(0, 6)}: ${e?.message ?? e}`);
       }
     };
 
@@ -278,28 +327,32 @@ export default function ConvoyScreen() {
 
   const toggleVoice = async () => {
     if (voiceActive) {
+      addLog('VOICE', 'Leaving voice chat');
       closeAllPeers();
       localStreamRef.current = null;
       voiceActiveRef.current = false;
       setVoiceActive(false);
       setMuted(false);
     } else {
+      addLog('VOICE', `Joining voice chat, remoteVoiceUsers=${remoteVoiceIdsRef.current.size}`);
       try {
         const stream = await startLocalAudio();
         localStreamRef.current = stream;
         voiceActiveRef.current = true;
         setVoiceActive(true);
+        addLog('VOICE', `Emitting voice-ready to room ${code}`);
         socket.emit('voice-ready', code);
-        // Conectează-te la cei deja în voice
+        // Connect to those already in voice
         for (const targetId of remoteVoiceIdsRef.current) {
+          addLog('VOICE', `Creating offer to existing voice user ${targetId.slice(0, 6)}`);
           try {
             await createOffer(targetId, () => {});
           } catch (e: any) {
-            console.error('[webrtc] offer error:', e);
+            addLog('ERROR', `createOffer to ${targetId.slice(0, 6)}: ${e?.message ?? e}`);
           }
         }
       } catch (e: any) {
-        console.error('[voice] toggleVoice error:', e);
+        addLog('ERROR', `toggleVoice join failed: ${e?.message ?? e}`);
         Alert.alert('Eroare', 'Nu s-a putut accesa microfonul');
       }
     }
@@ -310,12 +363,15 @@ export default function ConvoyScreen() {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
-        setMuted(!audioTrack.enabled);
+        const nowMuted = !audioTrack.enabled;
+        addLog('MIC', `Mic ${nowMuted ? 'muted' : 'unmuted'}`);
+        setMuted(nowMuted);
       }
     }
   };
 
   const leaveConvoy = () => {
+    addLog('SOCKET', 'Leaving convoy');
     closeAllPeers();
     locationSubRef.current?.remove();
     socket.disconnect();
@@ -407,7 +463,7 @@ export default function ConvoyScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Map */}
+      {/* Map — always rendered */}
       <MapView
         ref={mapRef}
         style={styles.map}
@@ -422,7 +478,6 @@ export default function ConvoyScreen() {
         toolbarEnabled={false}
         onLongPress={handleLongPress}
       >
-        {/* My marker */}
         {myLocation && (
           <Marker
             coordinate={{ latitude: myLocation.lat, longitude: myLocation.lng }}
@@ -434,8 +489,6 @@ export default function ConvoyScreen() {
             <CarIcon color="#f4a000" />
           </Marker>
         )}
-
-        {/* Other members */}
         {[...otherLocations.entries()].map(([id, loc]) => (
           <Marker
             key={id}
@@ -448,26 +501,15 @@ export default function ConvoyScreen() {
             <CarIcon color="#4CAF50" />
           </Marker>
         ))}
-        {/* Route polyline */}
         {routeCoords.length > 0 && (
-          <Polyline
-            coordinates={routeCoords}
-            strokeColor="#f4a000"
-            strokeWidth={4}
-          />
+          <Polyline coordinates={routeCoords} strokeColor="#f4a000" strokeWidth={4} />
         )}
-
-        {/* Destination marker */}
         {destination && (
-          <Marker
-            coordinate={destination}
-            title="Destinație"
-            pinColor="#ff4444"
-          />
+          <Marker coordinate={destination} title="Destinație" pinColor="#ff4444" />
         )}
       </MapView>
 
-      {/* Top overlay — code + members */}
+      {/* Top overlay */}
       <View style={styles.topOverlay}>
         <View style={styles.codeChip}>
           <Text style={styles.codeText}>{code}</Text>
@@ -475,18 +517,54 @@ export default function ConvoyScreen() {
         <Text style={styles.membersText}>{members} {members === 1 ? 'membru' : 'membri'}</Text>
       </View>
 
-      {/* Map buttons */}
-      <TouchableOpacity style={styles.centerButton} onPress={centerOnMe}>
-        <Text style={styles.centerIcon}>📍</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.fitAllButton} onPress={fitAll}>
-        <Text style={styles.centerIcon}>👥</Text>
-      </TouchableOpacity>
+      {/* Map buttons — only visible on map tab */}
+      {activeTab === 'map' && (
+        <>
+          <TouchableOpacity style={styles.centerButton} onPress={centerOnMe}>
+            <Text style={styles.centerIcon}>📍</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.fitAllButton} onPress={fitAll}>
+            <Text style={styles.centerIcon}>👥</Text>
+          </TouchableOpacity>
+        </>
+      )}
 
-      {/* Bottom controls */}
+      {/* Debug panel — shown over map when debug tab active */}
+      {activeTab === 'debug' && (
+        <View style={styles.debugPanel}>
+          <View style={styles.debugHeader}>
+            <Text style={styles.debugTitle}>Debug ({debugLogs.length} logs)</Text>
+            <TouchableOpacity
+              style={styles.debugClearBtn}
+              onPress={() => { clearLogs(); setDebugLogs([]); }}
+            >
+              <Text style={styles.debugClearText}>Șterge</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            ref={logScrollRef}
+            style={styles.debugScroll}
+            onContentSizeChange={() => logScrollRef.current?.scrollToEnd({ animated: false })}
+          >
+            {debugLogs.length === 0 && (
+              <Text style={styles.debugEmpty}>Niciun log încă. Apasă Voice pentru a testa.</Text>
+            )}
+            {debugLogs.map((entry) => (
+              <View key={entry.id} style={styles.logRow}>
+                <Text style={styles.logTime}>{entry.time}</Text>
+                <Text style={[styles.logCategory, { color: categoryColor(entry.category) }]}>
+                  {entry.category.padEnd(6)}
+                </Text>
+                <Text style={styles.logMessage}>{entry.message}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Bottom controls — always visible */}
       <View style={styles.bottomOverlay}>
         <View style={styles.buttonsRow}>
-          {/* Voice toggle */}
           <TouchableOpacity
             style={[
               styles.controlButton,
@@ -501,7 +579,6 @@ export default function ConvoyScreen() {
             </Text>
           </TouchableOpacity>
 
-          {/* Mute — Discord style */}
           {voiceActive && (
             <TouchableOpacity
               style={[styles.controlButton, muted ? styles.controlButtonMuted : styles.controlButtonActive]}
@@ -517,12 +594,31 @@ export default function ConvoyScreen() {
             </TouchableOpacity>
           )}
 
-          {/* Leave */}
           <TouchableOpacity style={styles.leaveBtn} onPress={leaveConvoy}>
             <Text style={styles.controlIcon}>🚪</Text>
             <Text style={styles.leaveLabel}>Ieși</Text>
           </TouchableOpacity>
         </View>
+      </View>
+
+      {/* Tab bar */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'map' && styles.tabItemActive]}
+          onPress={() => setActiveTab('map')}
+        >
+          <Text style={styles.tabIcon}>🗺️</Text>
+          <Text style={[styles.tabLabel, activeTab === 'map' && styles.tabLabelActive]}>Hartă</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tabItem, activeTab === 'debug' && styles.tabItemActive]}
+          onPress={() => setActiveTab('debug')}
+        >
+          <Text style={styles.tabIcon}>🐛</Text>
+          <Text style={[styles.tabLabel, activeTab === 'debug' && styles.tabLabelActive]}>
+            Debug{debugLogs.length > 0 ? ` (${debugLogs.length})` : ''}
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -540,9 +636,13 @@ const darkMapStyle = [
   { featureType: 'transit', stylers: [{ visibility: 'off' }] },
 ];
 
+const TAB_BAR_HEIGHT = 52;
+const CONTROLS_HEIGHT = 90; // approximate height of bottom controls + padding
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f0f0f' },
   map: { flex: 1 },
+
   topOverlay: {
     position: 'absolute',
     top: 50,
@@ -560,10 +660,24 @@ const styles = StyleSheet.create({
   },
   codeText: { color: '#f4a000', fontWeight: 'bold', fontSize: 18, letterSpacing: 4 },
   membersText: { color: '#aaa', fontSize: 12 },
+
   centerButton: {
     position: 'absolute',
     right: 16,
-    bottom: 140,
+    bottom: TAB_BAR_HEIGHT + CONTROLS_HEIGHT + 10,
+    backgroundColor: 'rgba(15, 15, 15, 0.85)',
+    borderRadius: 25,
+    width: 50,
+    height: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderColor: '#333',
+    borderWidth: 1,
+  },
+  fitAllButton: {
+    position: 'absolute',
+    right: 16,
+    bottom: TAB_BAR_HEIGHT + CONTROLS_HEIGHT + 68,
     backgroundColor: 'rgba(15, 15, 15, 0.85)',
     borderRadius: 25,
     width: 50,
@@ -574,24 +688,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   centerIcon: { fontSize: 22 },
-  fitAllButton: {
-    position: 'absolute',
-    right: 16,
-    bottom: 200,
-    backgroundColor: 'rgba(15, 15, 15, 0.85)',
-    borderRadius: 25,
-    width: 50,
-    height: 50,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderColor: '#333',
-    borderWidth: 1,
-  },
+
   bottomOverlay: {
     position: 'absolute',
-    bottom: 40,
+    bottom: TAB_BAR_HEIGHT + 10,
     left: 16,
     right: 16,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  buttonsRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 12,
@@ -620,11 +727,6 @@ const styles = StyleSheet.create({
     minWidth: 70,
   },
   leaveLabel: { color: '#ff4444', fontSize: 11 },
-  buttonsRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 12,
-  },
   micContainer: {
     position: 'relative',
     alignItems: 'center',
@@ -638,22 +740,85 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     transform: [{ rotate: '135deg' }],
   },
+
+  // Tab bar
+  tabBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: TAB_BAR_HEIGHT,
+    backgroundColor: 'rgba(10, 10, 10, 0.97)',
+    borderTopColor: '#222',
+    borderTopWidth: 1,
+    flexDirection: 'row',
+  },
+  tabItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  tabItemActive: {
+    borderTopWidth: 2,
+    borderTopColor: '#f4a000',
+  },
+  tabIcon: { fontSize: 18 },
+  tabLabel: { color: '#666', fontSize: 10 },
+  tabLabelActive: { color: '#f4a000' },
+
+  // Debug panel
+  debugPanel: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: TAB_BAR_HEIGHT + CONTROLS_HEIGHT + 6,
+    backgroundColor: '#0a0a0a',
+    paddingTop: 50,
+  },
+  debugHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomColor: '#222',
+    borderBottomWidth: 1,
+  },
+  debugTitle: { color: '#f4a000', fontWeight: 'bold', fontSize: 13 },
+  debugClearBtn: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#444',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  debugClearText: { color: '#aaa', fontSize: 12 },
+  debugScroll: { flex: 1, paddingHorizontal: 8 },
+  debugEmpty: { color: '#444', fontSize: 12, textAlign: 'center', marginTop: 40 },
+  logRow: {
+    flexDirection: 'row',
+    paddingVertical: 3,
+    borderBottomColor: '#111',
+    borderBottomWidth: 1,
+    flexWrap: 'wrap',
+  },
+  logTime: { color: '#555', fontSize: 10, fontFamily: 'monospace', marginRight: 6, minWidth: 90 },
+  logCategory: { fontSize: 10, fontWeight: 'bold', fontFamily: 'monospace', marginRight: 6, minWidth: 50 },
+  logMessage: { color: '#ccc', fontSize: 10, fontFamily: 'monospace', flex: 1 },
 });
 
 function CarIcon({ color }: { color: string }) {
   return (
     <View style={carStyles.wrapper}>
-      {/* Car body */}
       <View style={[carStyles.body, { backgroundColor: color }]}>
-        {/* Windshield */}
         <View style={carStyles.windshield} />
-        {/* Rear window */}
         <View style={carStyles.rearWindow} />
       </View>
-      {/* Left wheels */}
       <View style={[carStyles.wheel, carStyles.wheelTopLeft]} />
       <View style={[carStyles.wheel, carStyles.wheelBottomLeft]} />
-      {/* Right wheels */}
       <View style={[carStyles.wheel, carStyles.wheelTopRight]} />
       <View style={[carStyles.wheel, carStyles.wheelBottomRight]} />
     </View>
@@ -661,42 +826,11 @@ function CarIcon({ color }: { color: string }) {
 }
 
 const carStyles = StyleSheet.create({
-  wrapper: {
-    width: 24,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  body: {
-    width: 18,
-    height: 36,
-    borderRadius: 6,
-    borderTopLeftRadius: 8,
-    borderTopRightRadius: 8,
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  windshield: {
-    width: 12,
-    height: 8,
-    backgroundColor: 'rgba(255,255,255,0.4)',
-    borderRadius: 2,
-    marginTop: 5,
-  },
-  rearWindow: {
-    width: 12,
-    height: 6,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    borderRadius: 2,
-    marginTop: 8,
-  },
-  wheel: {
-    position: 'absolute',
-    width: 5,
-    height: 8,
-    backgroundColor: '#222',
-    borderRadius: 2,
-  },
+  wrapper: { width: 24, height: 40, alignItems: 'center', justifyContent: 'center' },
+  body: { width: 18, height: 36, borderRadius: 6, borderTopLeftRadius: 8, borderTopRightRadius: 8, alignItems: 'center', overflow: 'hidden' },
+  windshield: { width: 12, height: 8, backgroundColor: 'rgba(255,255,255,0.4)', borderRadius: 2, marginTop: 5 },
+  rearWindow: { width: 12, height: 6, backgroundColor: 'rgba(255,255,255,0.25)', borderRadius: 2, marginTop: 8 },
+  wheel: { position: 'absolute', width: 5, height: 8, backgroundColor: '#222', borderRadius: 2 },
   wheelTopLeft: { left: 0, top: 4 },
   wheelBottomLeft: { left: 0, bottom: 4 },
   wheelTopRight: { right: 0, top: 4 },
