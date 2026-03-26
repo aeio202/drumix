@@ -48,6 +48,9 @@ export default function ConvoyScreen() {
   });
   const [voiceActive, setVoiceActive] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [remoteVoiceCount, setRemoteVoiceCount] = useState(0);
+  const voiceActiveRef = useRef(false);
+  const remoteVoiceIdsRef = useRef<Set<string>>(new Set());
 
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
@@ -194,36 +197,32 @@ export default function ConvoyScreen() {
         next.delete(data.memberId);
         return next;
       });
+      remoteVoiceIdsRef.current.delete(data.memberId);
+      setRemoteVoiceCount(remoteVoiceIdsRef.current.size);
     };
 
-    const ensureMic = async () => {
-      if (!localStreamRef.current) {
-        try {
-          const stream = await startLocalAudio();
-          localStreamRef.current = stream;
-          setVoiceActive(true);
-        } catch (e: any) {
-          console.error('[voice] Failed to start local audio:', e);
-          Alert.alert('Eroare', 'Nu s-a putut accesa microfonul pentru voce automată');
-        }
+    const ensureMic = async (): Promise<boolean> => {
+      if (localStreamRef.current) return true;
+      try {
+        const stream = await startLocalAudio();
+        localStreamRef.current = stream;
+        return true;
+      } catch (e: any) {
+        console.error('[voice] Failed to start local audio:', e);
+        Alert.alert('Eroare', 'Nu s-a putut accesa microfonul');
+        return false;
       }
     };
 
-    const onVoiceReady = async ({ from }: { from: string }) => {
-      await ensureMic();
-      if (localStreamRef.current) {
-        try {
-          await createOffer(from, (_id, _stream) => {
-            setVoiceActive(true);
-          });
-        } catch (e: any) {
-          console.error('[webrtc] createOffer error:', e);
-        }
-      }
+    const onVoiceReady = ({ from }: { from: string }) => {
+      remoteVoiceIdsRef.current.add(from);
+      setRemoteVoiceCount(remoteVoiceIdsRef.current.size);
+      // Nu auto-conectăm — userul apasă manual butonul de voice ca să se alăture
     };
 
     const onWebrtcOffer = async ({ from, offer }: { from: string; offer: any }) => {
-      await ensureMic();
+      const ok = await ensureMic();
+      if (!ok) return;
       try {
         await handleOffer(from, offer, (_id, _stream) => {
           setVoiceActive(true);
@@ -281,14 +280,24 @@ export default function ConvoyScreen() {
     if (voiceActive) {
       closeAllPeers();
       localStreamRef.current = null;
+      voiceActiveRef.current = false;
       setVoiceActive(false);
       setMuted(false);
     } else {
       try {
         const stream = await startLocalAudio();
         localStreamRef.current = stream;
+        voiceActiveRef.current = true;
         setVoiceActive(true);
         socket.emit('voice-ready', code);
+        // Conectează-te la cei deja în voice
+        for (const targetId of remoteVoiceIdsRef.current) {
+          try {
+            await createOffer(targetId, () => {});
+          } catch (e: any) {
+            console.error('[webrtc] offer error:', e);
+          }
+        }
       } catch (e: any) {
         console.error('[voice] toggleVoice error:', e);
         Alert.alert('Eroare', 'Nu s-a putut accesa microfonul');
@@ -479,11 +488,17 @@ export default function ConvoyScreen() {
         <View style={styles.buttonsRow}>
           {/* Voice toggle */}
           <TouchableOpacity
-            style={[styles.controlButton, voiceActive && styles.controlButtonActive]}
+            style={[
+              styles.controlButton,
+              voiceActive && styles.controlButtonActive,
+              !voiceActive && remoteVoiceCount > 0 && styles.controlButtonPending,
+            ]}
             onPress={toggleVoice}
           >
             <Text style={styles.controlIcon}>{voiceActive ? '🎙️' : '🔇'}</Text>
-            <Text style={styles.controlLabel}>{voiceActive ? 'Voice' : 'OFF'}</Text>
+            <Text style={styles.controlLabel}>
+              {voiceActive ? 'Voice' : remoteVoiceCount > 0 ? `Join (${remoteVoiceCount})` : 'OFF'}
+            </Text>
           </TouchableOpacity>
 
           {/* Mute — Discord style */}
@@ -592,6 +607,7 @@ const styles = StyleSheet.create({
   },
   controlButtonActive: { borderColor: '#4CAF50' },
   controlButtonMuted: { borderColor: '#ff4444' },
+  controlButtonPending: { borderColor: '#f4a000' },
   controlIcon: { fontSize: 24, marginBottom: 4 },
   controlLabel: { color: '#fff', fontSize: 11 },
   leaveBtn: {
