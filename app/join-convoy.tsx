@@ -37,7 +37,7 @@ export default function JoinConvoyScreen() {
         setLoading(false);
         if (res.ok) {
           setJoined(true);
-          setMembers(res.count ?? 2);
+          setMembers(res.count ?? 1);
         } else {
           Alert.alert('Eroare', res.error || 'Nu s-a putut intra în convoi');
           socket.disconnect();
@@ -50,6 +50,7 @@ export default function JoinConvoyScreen() {
     } else {
       socket.once('connect', tryJoin);
       socket.once('connect_error', () => {
+        socket.off('connect', tryJoin);
         setLoading(false);
         Alert.alert('Eroare', 'Nu s-a putut conecta la server');
         socket.disconnect();
@@ -95,7 +96,7 @@ export default function JoinConvoyScreen() {
         placeholder="ex: WOLF"
         placeholderTextColor="#555555"
         autoCapitalize="characters"
-        maxLength={5}
+        maxLength={4}
       />
 
       <TouchableOpacity

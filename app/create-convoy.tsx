@@ -1,6 +1,6 @@
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { socket } from '@/lib/socket';
 
 export default function CreateConvoyScreen() {
@@ -8,9 +8,12 @@ export default function CreateConvoyScreen() {
   const [code, setCode] = useState<string | null>(null);
   const [members, setMembers] = useState(1);
   const [error, setError] = useState('');
+  const convoyCreated = useRef(false);
 
   useEffect(() => {
     const onConnect = () => {
+      if (convoyCreated.current) return;
+      convoyCreated.current = true;
       socket.emit('create-convoy', (res: unknown) => {
         if (!res || typeof res !== 'object' || !('ok' in res)) {
           setError('Răspuns invalid de la server');
@@ -37,7 +40,11 @@ export default function CreateConvoyScreen() {
     socket.on('member-left', onMemberLeft);
     socket.on('connect_error', onError);
     socket.on('convoy-started', onConvoyStarted);
-    socket.connect();
+    if (socket.connected) {
+      onConnect();
+    } else {
+      socket.connect();
+    }
 
     return () => {
       socket.off('connect', onConnect);

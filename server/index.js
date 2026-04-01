@@ -60,6 +60,9 @@ io.on('connection', (socket) => {
       socket.to(code).emit('member-joined', { memberId: socket.id, count: convoy.members.length });
       console.log(`[convoy] ${socket.id} joined ${code} (${convoy.members.length} members)`);
       callback({ ok: true, count: convoy.members.length });
+      if (convoy.destination) {
+        socket.emit('destination-set', { lat: convoy.destination.lat, lng: convoy.destination.lng });
+      }
     } catch (err) {
       console.error('[join-convoy] error:', err);
       callback({ ok: false, error: 'Internal server error' });
@@ -109,6 +112,9 @@ io.on('connection', (socket) => {
       }
       socket.join(code);
       console.log(`[convoy] ${socket.id} rejoined ${code}`);
+      if (convoy.destination) {
+        socket.emit('destination-set', { lat: convoy.destination.lat, lng: convoy.destination.lng });
+      }
     } catch (err) {
       console.error('[rejoin-convoy] error:', err);
     }
@@ -121,7 +127,7 @@ io.on('connection', (socket) => {
       const convoy = convoys.get(data.code);
       if (!convoy || convoy.leader !== socket.id) return;
       convoy.destination = { lat: data.lat, lng: data.lng };
-      io.in(data.code).emit('destination-set', { lat: data.lat, lng: data.lng });
+      socket.to(data.code).emit('destination-set', { lat: data.lat, lng: data.lng });
       console.log(`[convoy] ${data.code} destination set: ${data.lat}, ${data.lng}`);
     } catch (err) {
       console.error('[set-destination] error:', err);
@@ -150,6 +156,31 @@ io.on('connection', (socket) => {
       socket.to(code).emit('voice-ready', { from: socket.id });
     } catch (err) {
       console.error('[voice-ready] error:', err);
+    }
+  });
+
+  socket.on('voice-left', (code) => {
+    if (typeof code !== 'string' || !code.trim()) return;
+    try {
+      const convoy = convoys.get(code);
+      if (!convoy || !convoy.members.includes(socket.id)) return;
+      socket.to(code).emit('voice-left', { from: socket.id });
+      console.log(`[voice] ${socket.id} left voice in ${code}`);
+    } catch (err) {
+      console.error('[voice-left] error:', err);
+    }
+  });
+
+  socket.on('route-update', (data) => {
+    if (!data || typeof data.code !== 'string') return;
+    if (!Array.isArray(data.coords) || data.coords.length === 0) return;
+    try {
+      const convoy = convoys.get(data.code);
+      if (!convoy || !convoy.members.includes(socket.id)) return;
+      socket.to(data.code).emit('route-update', { memberId: socket.id, coords: data.coords });
+      console.log(`[convoy] route-update from ${socket.id} in ${data.code} (${data.coords.length} pts)`);
+    } catch (err) {
+      console.error('[route-update] error:', err);
     }
   });
 

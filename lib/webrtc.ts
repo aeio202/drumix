@@ -9,27 +9,40 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import { socket } from './socket';
 import { addLog } from './debugLog';
 
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-      urls: 'turn:drumix.metered.live:80',
-      username: '0cbfd568101d08d5bdc38d06',
-      credential: 'QBzDW5493GG3h39c',
-    },
-    {
-      urls: 'turn:drumix.metered.live:443',
-      username: '0cbfd568101d08d5bdc38d06',
-      credential: 'QBzDW5493GG3h39c',
-    },
-    {
-      urls: 'turns:drumix.metered.live:443',
-      username: '0cbfd568101d08d5bdc38d06',
-      credential: 'QBzDW5493GG3h39c',
-    },
-  ],
-};
+const METERED_API_KEY = 'Z6iRsIsOM6GimJl2R_zghiVGbaYvjeH3I_FBRT720GYSmmGe';
+const FALLBACK_ICE = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+let iceServerPromise: Promise<any[]> | null = null;
+let cacheTime = 0;
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+async function getIceServers(): Promise<any[]> {
+  const now = Date.now();
+  if (iceServerPromise && now - cacheTime < CACHE_TTL) {
+    addLog('ICE', 'Using cached TURN credentials');
+    return iceServerPromise;
+  }
+  cacheTime = now;
+  iceServerPromise = fetch(
+    `https://drumix.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
+  )
+    .then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })
+    .then((servers) => {
+      addLog('ICE', `Fetched ${servers.length} TURN server(s) from Metered`);
+      return servers;
+    })
+    .catch((e: any) => {
+      iceServerPromise = null; // allow retry on next call
+      addLog('ERROR', `TURN fetch failed: ${e.message} — using fallback STUN only`);
+      return FALLBACK_ICE;
+    });
+  return iceServerPromise;
+}
 
 const peers = new Map<string, RTCPeerConnection>();
 const remoteStreams = new Map<string, MediaStream>();
@@ -105,17 +118,19 @@ async function flushPendingCandidates(peerId: string, pc: RTCPeerConnection) {
   }
 }
 
-export function createPeerConnection(
+export async function createPeerConnection(
   remoteId: string,
   onRemoteStream: (id: string, stream: MediaStream) => void,
-): RTCPeerConnection {
+): Promise<RTCPeerConnection> {
   if (peers.has(remoteId)) {
     addLog('WEBRTC', `Closing old PC for ${remoteId.slice(0, 6)}`);
     peers.get(remoteId)!.close();
+    pendingCandidates.delete(remoteId);
   }
 
+  const iceServers = await getIceServers();
   addLog('WEBRTC', `Creating PC for ${remoteId.slice(0, 6)}, localStream=${localStream ? 'YES' : 'NO'}`);
-  const pc = new RTCPeerConnection(ICE_SERVERS);
+  const pc = new RTCPeerConnection({ iceServers });
   peers.set(remoteId, pc);
 
   // Add local audio tracks
@@ -180,7 +195,7 @@ export function createPeerConnection(
 
 export async function createOffer(remoteId: string, onRemoteStream: (id: string, stream: MediaStream) => void) {
   addLog('WEBRTC', `Creating offer → ${remoteId.slice(0, 6)}`);
-  const pc = createPeerConnection(remoteId, onRemoteStream);
+  const pc = await createPeerConnection(remoteId, onRemoteStream);
   const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false } as any);
   await pc.setLocalDescription(offer);
   addLog('WEBRTC', `Offer sent → ${remoteId.slice(0, 6)}`);
@@ -193,7 +208,7 @@ export async function handleOffer(
   onRemoteStream: (id: string, stream: MediaStream) => void,
 ) {
   addLog('WEBRTC', `Handling offer from ${fromId.slice(0, 6)}`);
-  const pc = createPeerConnection(fromId, onRemoteStream);
+  const pc = await createPeerConnection(fromId, onRemoteStream);
   await pc.setRemoteDescription(new RTCSessionDescription(offer));
   await flushPendingCandidates(fromId, pc);
   const answer = await pc.createAnswer();

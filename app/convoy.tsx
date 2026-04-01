@@ -68,9 +68,12 @@ export default function ConvoyScreen() {
 
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
+  const [otherRoutes, setOtherRoutes] = useState<Map<string, LatLng[]>>(new Map());
   const [destination, setDestination] = useState<LatLng | null>(null);
   const [routeCoords, setRouteCoords] = useState<LatLng[]>([]);
+  const [passedIndex, setPassedIndex] = useState(0);
   const myLocationRef = useRef<MemberLocation | null>(null);
+  const routeCoordsRef = useRef<LatLng[]>([]);
   const localStreamRef = useRef<any>(null);
   const mapRef = useRef<MapView>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
@@ -143,17 +146,17 @@ export default function ConvoyScreen() {
             }, 300);
           }
           socket.emit('gps-update', { code, ...myLoc });
-          // Trim route behind user
-          setRouteCoords((prev) => {
-            if (prev.length < 2) return prev;
+          // Update passed index for route fading
+          const route = routeCoordsRef.current;
+          if (route.length >= 2) {
             let closest = 0;
             let minDist = Infinity;
-            for (let i = 0; i < prev.length; i++) {
-              const d = Math.pow(prev[i].latitude - myLoc.lat, 2) + Math.pow(prev[i].longitude - myLoc.lng, 2);
+            for (let i = 0; i < route.length; i++) {
+              const d = Math.pow(route[i].latitude - myLoc.lat, 2) + Math.pow(route[i].longitude - myLoc.lng, 2);
               if (d < minDist) { minDist = d; closest = i; }
             }
-            return prev.slice(closest);
-          });
+            setPassedIndex(closest);
+          }
         },
       );
 
@@ -198,9 +201,6 @@ export default function ConvoyScreen() {
       if (state === 'active') {
         if (!socket.connected) {
           socket.connect();
-          socket.once('connect', () => {
-            socket.emit('rejoin-convoy', code);
-          });
         }
         if (!locationSubRef.current) {
           const { status } = await Location.requestForegroundPermissionsAsync();
@@ -245,6 +245,11 @@ export default function ConvoyScreen() {
         next.delete(data.memberId);
         return next;
       });
+      setOtherRoutes((prev) => {
+        const next = new Map(prev);
+        next.delete(data.memberId);
+        return next;
+      });
       remoteVoiceIdsRef.current.delete(data.memberId);
       setRemoteVoiceCount(remoteVoiceIdsRef.current.size);
     };
@@ -265,6 +270,12 @@ export default function ConvoyScreen() {
     const onVoiceReady = ({ from }: { from: string }) => {
       addLog('VOICE', `voice-ready from ${from.slice(0, 6)} — added to remoteVoice list`);
       remoteVoiceIdsRef.current.add(from);
+      setRemoteVoiceCount(remoteVoiceIdsRef.current.size);
+    };
+
+    const onVoiceLeft = ({ from }: { from: string }) => {
+      addLog('VOICE', `voice-left from ${from.slice(0, 6)}`);
+      remoteVoiceIdsRef.current.delete(from);
       setRemoteVoiceCount(remoteVoiceIdsRef.current.size);
     };
 
@@ -309,22 +320,35 @@ export default function ConvoyScreen() {
       }
     };
 
+    const onRouteUpdate = (data: { memberId: string; coords: LatLng[] }) => {
+      if (!data?.memberId || !Array.isArray(data.coords) || data.coords.length === 0) return;
+      setOtherRoutes((prev) => {
+        const next = new Map(prev);
+        next.set(data.memberId, data.coords);
+        return next;
+      });
+    };
+
     socket.on('member-joined', onMemberJoined);
     socket.on('member-left', onMemberLeft);
     socket.on('voice-ready', onVoiceReady);
+    socket.on('voice-left', onVoiceLeft);
     socket.on('webrtc-offer', onWebrtcOffer);
     socket.on('webrtc-answer', onWebrtcAnswer);
     socket.on('webrtc-ice-candidate', onIceCandidate);
     socket.on('destination-set', onDestination);
+    socket.on('route-update', onRouteUpdate);
 
     return () => {
       socket.off('member-joined', onMemberJoined);
       socket.off('member-left', onMemberLeft);
       socket.off('voice-ready', onVoiceReady);
+      socket.off('voice-left', onVoiceLeft);
       socket.off('webrtc-offer', onWebrtcOffer);
       socket.off('webrtc-answer', onWebrtcAnswer);
       socket.off('webrtc-ice-candidate', onIceCandidate);
       socket.off('destination-set', onDestination);
+      socket.off('route-update', onRouteUpdate);
       closeAllPeers();
     };
   }, []);
@@ -332,6 +356,7 @@ export default function ConvoyScreen() {
   const toggleVoice = async () => {
     if (voiceActive) {
       addLog('VOICE', 'Leaving voice chat');
+      socket.emit('voice-left', code);
       closeAllPeers();
       localStreamRef.current = null;
       voiceActiveRef.current = false;
@@ -396,6 +421,9 @@ export default function ConvoyScreen() {
         const polylineStr = data.routes[0]?.overview_polyline?.points;
         const points = decodePolyline(polylineStr ?? '');
         setRouteCoords(points);
+        routeCoordsRef.current = points;
+        setPassedIndex(0);
+        socket.emit('route-update', { code, coords: points });
       } else {
         Alert.alert('Rută', `Status: ${data.status}\n${data.error_message || 'No routes found'}`);
       }
@@ -437,6 +465,7 @@ export default function ConvoyScreen() {
     const allLocs: { lat: number; lng: number }[] = [];
     if (myLocation) allLocs.push(myLocation);
     otherLocations.forEach((loc) => allLocs.push(loc));
+    if (destination) allLocs.push({ lat: destination.latitude, lng: destination.longitude });
     if (allLocs.length === 0) return;
     if (allLocs.length === 1) {
       centerOnMe();
@@ -505,8 +534,29 @@ export default function ConvoyScreen() {
             <CarIcon color="#4CAF50" />
           </Marker>
         ))}
+        {[...otherRoutes.entries()].map(([id, coords]) =>
+          coords.length > 1 ? (
+            <Polyline
+              key={`route-${id}`}
+              coordinates={coords}
+              strokeColor="#4CAF5080"
+              strokeWidth={4}
+            />
+          ) : null
+        )}
+        {routeCoords.length > 0 && passedIndex > 0 && (
+          <Polyline
+            coordinates={routeCoords.slice(0, passedIndex + 1)}
+            strokeColor="#f4a00033"
+            strokeWidth={4}
+          />
+        )}
         {routeCoords.length > 0 && (
-          <Polyline coordinates={routeCoords} strokeColor="#f4a000" strokeWidth={4} />
+          <Polyline
+            coordinates={routeCoords.slice(passedIndex)}
+            strokeColor="#f4a000"
+            strokeWidth={4}
+          />
         )}
         {destination && (
           <Marker coordinate={destination} title="Destinație" pinColor="#ff4444" />
