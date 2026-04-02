@@ -111,6 +111,11 @@ io.on('connection', (socket) => {
         convoy.members.push(socket.id);
       }
       socket.join(code);
+      // If the original leader has disconnected, promote whoever rejoins first
+      if (!convoy.members.includes(convoy.leader)) {
+        convoy.leader = socket.id;
+        console.log(`[convoy] ${socket.id} became new leader of ${code} (original leader gone)`);
+      }
       console.log(`[convoy] ${socket.id} rejoined ${code}`);
       if (convoy.destination) {
         socket.emit('destination-set', { lat: convoy.destination.lat, lng: convoy.destination.lng });

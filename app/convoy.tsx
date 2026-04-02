@@ -32,6 +32,16 @@ function decodePolyline(encoded: string): LatLng[] {
   return points;
 }
 
+// Reduce number of coords sent over socket to avoid large payloads on mobile data
+function downsampleCoords(points: LatLng[], max = 150): LatLng[] {
+  if (points.length <= max) return points;
+  const step = Math.ceil(points.length / max);
+  const result = points.filter((_, i) => i % step === 0);
+  const last = points[points.length - 1];
+  if (result[result.length - 1] !== last) result.push(last);
+  return result;
+}
+
 function categoryColor(cat: string): string {
   switch (cat) {
     case 'ICE': return '#00bcd4';
@@ -215,6 +225,7 @@ export default function ConvoyScreen() {
                   heading: loc.coords.heading || 0,
                 };
                 setMyLocation(myLoc);
+                myLocationRef.current = myLoc;
                 socket.emit('gps-update', { code, ...myLoc });
               },
             );
@@ -288,7 +299,6 @@ export default function ConvoyScreen() {
           addLog('VOICE', `Remote stream arrived — setting voiceActive`);
           setVoiceActive(true);
           voiceActiveRef.current = true;
-          localStreamRef.current = localStreamRef.current; // already set
         });
       } catch (e: any) {
         addLog('ERROR', `handleOffer from ${from.slice(0, 6)}: ${e?.message ?? e}`);
@@ -401,6 +411,9 @@ export default function ConvoyScreen() {
 
   const leaveConvoy = () => {
     addLog('SOCKET', 'Leaving convoy');
+    if (voiceActiveRef.current) {
+      socket.emit('voice-left', code);
+    }
     closeAllPeers();
     locationSubRef.current?.remove();
     socket.disconnect();
@@ -413,7 +426,7 @@ export default function ConvoyScreen() {
         `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.latitude},${origin.longitude}&destination=${dest.latitude},${dest.longitude}&mode=driving&key=${GOOGLE_API_KEY}`
       );
       if (!res.ok) {
-        Alert.alert('Eroare', `Eroare server: ${res.status}`);
+        addLog('ERROR', `Route fetch HTTP ${res.status}`);
         return;
       }
       const data = await res.json();
@@ -423,12 +436,12 @@ export default function ConvoyScreen() {
         setRouteCoords(points);
         routeCoordsRef.current = points;
         setPassedIndex(0);
-        socket.emit('route-update', { code, coords: points });
+        socket.emit('route-update', { code, coords: downsampleCoords(points) });
       } else {
-        Alert.alert('Rută', `Status: ${data.status}\n${data.error_message || 'No routes found'}`);
+        addLog('ERROR', `No route: ${data.status} ${data.error_message ?? ''}`);
       }
     } catch (e: any) {
-      Alert.alert('Eroare', e.message || 'Nu s-a putut calcula ruta');
+      addLog('ERROR', `fetchRoute: ${e?.message ?? e}`);
     }
   };
 
@@ -440,13 +453,19 @@ export default function ConvoyScreen() {
 
   const handleLongPress = (e: any) => {
     if (isLeader !== 'true') return;
-    const coord = e.nativeEvent.coordinate;
-    const dest = { latitude: coord.latitude, longitude: coord.longitude };
-    setDestination(dest);
-    if (myLocation) {
-      fetchRoute({ latitude: myLocation.lat, longitude: myLocation.lng }, dest);
+    try {
+      const coord = e.nativeEvent.coordinate;
+      const dest = { latitude: coord.latitude, longitude: coord.longitude };
+      setDestination(dest);
+      if (myLocation) {
+        fetchRoute({ latitude: myLocation.lat, longitude: myLocation.lng }, dest).catch((err: any) => {
+          addLog('ERROR', `fetchRoute unhandled: ${err?.message ?? err}`);
+        });
+      }
+      socket.emit('set-destination', { code, lat: dest.latitude, lng: dest.longitude });
+    } catch (err: any) {
+      addLog('ERROR', `handleLongPress: ${err?.message ?? err}`);
     }
-    socket.emit('set-destination', { code, lat: dest.latitude, lng: dest.longitude });
   };
 
   const centerOnMe = () => {

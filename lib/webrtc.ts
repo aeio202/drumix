@@ -9,39 +9,29 @@ import { Platform, PermissionsAndroid } from 'react-native';
 import { socket } from './socket';
 import { addLog } from './debugLog';
 
-const METERED_API_KEY = 'Z6iRsIsOM6GimJl2R_zghiVGbaYvjeH3I_FBRT720GYSmmGe';
-const FALLBACK_ICE = [
+const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: 'turn:openrelay.metered.video:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.video:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.video:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
-let iceServerPromise: Promise<any[]> | null = null;
-let cacheTime = 0;
-const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
-async function getIceServers(): Promise<any[]> {
-  const now = Date.now();
-  if (iceServerPromise && now - cacheTime < CACHE_TTL) {
-    addLog('ICE', 'Using cached TURN credentials');
-    return iceServerPromise;
-  }
-  cacheTime = now;
-  iceServerPromise = fetch(
-    `https://drumix.metered.live/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
-  )
-    .then((res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    })
-    .then((servers) => {
-      addLog('ICE', `Fetched ${servers.length} TURN server(s) from Metered`);
-      return servers;
-    })
-    .catch((e: any) => {
-      iceServerPromise = null; // allow retry on next call
-      addLog('ERROR', `TURN fetch failed: ${e.message} — using fallback STUN only`);
-      return FALLBACK_ICE;
-    });
-  return iceServerPromise;
+function getIceServers(): any[] {
+  addLog('ICE', `Using ${ICE_SERVERS.length} ICE server(s) (STUN + TURN relay)`);
+  return ICE_SERVERS;
 }
 
 const peers = new Map<string, RTCPeerConnection>();
@@ -128,7 +118,7 @@ export async function createPeerConnection(
     pendingCandidates.delete(remoteId);
   }
 
-  const iceServers = await getIceServers();
+  const iceServers = getIceServers();
   addLog('WEBRTC', `Creating PC for ${remoteId.slice(0, 6)}, localStream=${localStream ? 'YES' : 'NO'}`);
   const pc = new RTCPeerConnection({ iceServers });
   peers.set(remoteId, pc);

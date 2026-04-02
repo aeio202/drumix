@@ -60,7 +60,7 @@ export default function JoinConvoyScreen() {
   };
 
   const handleBack = () => {
-    if (joined) socket.disconnect();
+    socket.disconnect();
     router.back();
   };
 
