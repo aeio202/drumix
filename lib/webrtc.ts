@@ -6,26 +6,31 @@ import {
   MediaStream,
 } from 'react-native-webrtc';
 import { Platform, PermissionsAndroid } from 'react-native';
+import InCallManager from 'react-native-incall-manager';
 import { socket } from './socket';
 import { addLog } from './debugLog';
 
 const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
   {
-    urls: 'turn:openrelay.metered.video:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:global.relay.metered.ca:80',
+    username: '0cbfd568101d08d5bdc38d06',
+    credential: 'QBzDW5493GG3h39c',
   },
   {
-    urls: 'turn:openrelay.metered.video:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+    username: '0cbfd568101d08d5bdc38d06',
+    credential: 'QBzDW5493GG3h39c',
   },
   {
-    urls: 'turn:openrelay.metered.video:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:global.relay.metered.ca:443',
+    username: '0cbfd568101d08d5bdc38d06',
+    credential: 'QBzDW5493GG3h39c',
+  },
+  {
+    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+    username: '0cbfd568101d08d5bdc38d06',
+    credential: 'QBzDW5493GG3h39c',
   },
 ];
 
@@ -78,6 +83,9 @@ export async function startLocalAudio(): Promise<MediaStream> {
     localStream = stream as MediaStream;
     const trackCount = localStream.getAudioTracks().length;
     addLog('MIC', `Mic started OK — ${trackCount} audio track(s)`);
+    InCallManager.start({ media: 'audio' });
+    InCallManager.setForceSpeakerphoneOn(true);
+    addLog('MIC', 'InCallManager started, speaker forced ON');
     return localStream;
   } catch (e: any) {
     addLog('ERROR', `Mic failed: ${e?.message ?? e}`);
@@ -90,6 +98,8 @@ export function stopLocalAudio() {
     addLog('MIC', 'Stopping local audio tracks');
     localStream.getTracks().forEach((t: any) => t.stop());
     localStream = null;
+    InCallManager.stop();
+    addLog('MIC', 'InCallManager stopped');
   }
 }
 
