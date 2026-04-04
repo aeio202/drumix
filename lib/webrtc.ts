@@ -10,6 +10,18 @@ import InCallManager from 'react-native-incall-manager';
 import { socket } from './socket';
 import { addLog } from './debugLog';
 
+let speakerOn = true;
+
+export function isSpeakerOn(): boolean {
+  return speakerOn;
+}
+
+export function setSpeaker(on: boolean) {
+  speakerOn = on;
+  InCallManager.setForceSpeakerphoneOn(on);
+  addLog('MIC', `Speaker ${on ? 'ON' : 'OFF (earpiece)'}`);
+}
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.relay.metered.ca:80' },
   {

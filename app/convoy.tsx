@@ -13,6 +13,8 @@ import {
   handleAnswer,
   handleIceCandidate,
   closeAllPeers,
+  isSpeakerOn,
+  setSpeaker,
 } from '@/lib/webrtc';
 import { addLog, getLogs, clearLogs, subscribeToLogs, LogEntry } from '@/lib/debugLog';
 
@@ -75,6 +77,10 @@ export default function ConvoyScreen() {
   const [remoteVoiceCount, setRemoteVoiceCount] = useState(0);
   const voiceActiveRef = useRef(false);
   const remoteVoiceIdsRef = useRef<Set<string>>(new Set());
+
+  const [speakerEnabled, setSpeakerEnabled] = useState(() => isSpeakerOn());
+  const [trackingMode, setTrackingMode] = useState<'free' | 'followMe' | 'followAll'>('followMe');
+  const trackingModeRef = useRef<'free' | 'followMe' | 'followAll'>('followMe');
 
   const [myLocation, setMyLocation] = useState<MemberLocation | null>(null);
   const [otherLocations, setOtherLocations] = useState<Map<string, MemberLocation>>(new Map());
@@ -144,18 +150,39 @@ export default function ConvoyScreen() {
             speed: loc.coords.speed || 0,
             heading: loc.coords.heading || 0,
           };
-          const isFirst = myLocationRef.current === null;
           setMyLocation(myLoc);
           myLocationRef.current = myLoc;
-          if (isFirst && mounted && mapRef.current) {
-            mapRef.current.animateToRegion({
-              latitude: myLoc.lat,
-              longitude: myLoc.lng,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }, 300);
-          }
           socket.emit('gps-update', { code, ...myLoc });
+          // Auto-follow camera
+          if (mounted && mapRef.current) {
+            const mode = trackingModeRef.current;
+            if (mode === 'followMe') {
+              mapRef.current.animateToRegion({
+                latitude: myLoc.lat,
+                longitude: myLoc.lng,
+                latitudeDelta: 0.01,
+                longitudeDelta: 0.01,
+              }, 300);
+            } else if (mode === 'followAll') {
+              // Recalculate bounding box with updated own position
+              setOtherLocations((prev) => {
+                const allLocs: { lat: number; lng: number }[] = [myLoc];
+                prev.forEach((loc) => allLocs.push(loc));
+                if (allLocs.length >= 2 && mapRef.current) {
+                  const lats = allLocs.map((l) => l.lat);
+                  const lngs = allLocs.map((l) => l.lng);
+                  const pad = 0.005;
+                  mapRef.current.animateToRegion({
+                    latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
+                    longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+                    latitudeDelta: Math.max(Math.max(...lats) - Math.min(...lats) + pad * 2, 0.005),
+                    longitudeDelta: Math.max(Math.max(...lngs) - Math.min(...lngs) + pad * 2, 0.005),
+                  }, 300);
+                }
+                return prev; // don't mutate
+              });
+            }
+          }
           // Update passed index for route fading
           const route = routeCoordsRef.current;
           if (route.length >= 2) {
@@ -183,6 +210,27 @@ export default function ConvoyScreen() {
       setOtherLocations((prev) => {
         const next = new Map(prev);
         next.set(data.memberId, { lat: data.lat, lng: data.lng, speed: data.speed, heading: data.heading });
+        // Auto-fit when in followAll mode
+        if (trackingModeRef.current === 'followAll' && mapRef.current) {
+          const allLocs: { lat: number; lng: number }[] = [];
+          if (myLocationRef.current) allLocs.push(myLocationRef.current);
+          next.forEach((loc) => allLocs.push(loc));
+          if (allLocs.length >= 2) {
+            const lats = allLocs.map((l) => l.lat);
+            const lngs = allLocs.map((l) => l.lng);
+            const minLat = Math.min(...lats);
+            const maxLat = Math.max(...lats);
+            const minLng = Math.min(...lngs);
+            const maxLng = Math.max(...lngs);
+            const padding = 0.005;
+            mapRef.current.animateToRegion({
+              latitude: (minLat + maxLat) / 2,
+              longitude: (minLng + maxLng) / 2,
+              latitudeDelta: Math.max(maxLat - minLat + padding * 2, 0.005),
+              longitudeDelta: Math.max(maxLng - minLng + padding * 2, 0.005),
+            }, 300);
+          }
+        }
         return next;
       });
     };
@@ -468,7 +516,18 @@ export default function ConvoyScreen() {
     }
   };
 
+  const setTracking = (mode: 'free' | 'followMe' | 'followAll') => {
+    trackingModeRef.current = mode;
+    setTrackingMode(mode);
+  };
+
   const centerOnMe = () => {
+    // Toggle: if already followMe, go free; otherwise activate followMe
+    if (trackingMode === 'followMe') {
+      setTracking('free');
+      return;
+    }
+    setTracking('followMe');
     if (myLocation && mapRef.current) {
       mapRef.current.animateToRegion({
         latitude: myLocation.lat,
@@ -480,6 +539,12 @@ export default function ConvoyScreen() {
   };
 
   const fitAll = () => {
+    // Toggle: if already followAll, go free; otherwise activate followAll
+    if (trackingMode === 'followAll') {
+      setTracking('free');
+      return;
+    }
+    setTracking('followAll');
     if (!mapRef.current) return;
     const allLocs: { lat: number; lng: number }[] = [];
     if (myLocation) allLocs.push(myLocation);
@@ -487,7 +552,14 @@ export default function ConvoyScreen() {
     if (destination) allLocs.push({ lat: destination.latitude, lng: destination.longitude });
     if (allLocs.length === 0) return;
     if (allLocs.length === 1) {
-      centerOnMe();
+      if (myLocation && mapRef.current) {
+        mapRef.current.animateToRegion({
+          latitude: myLocation.lat,
+          longitude: myLocation.lng,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        }, 500);
+      }
       return;
     }
     const lats = allLocs.map((l) => l.lat);
@@ -503,6 +575,12 @@ export default function ConvoyScreen() {
       latitudeDelta: Math.max(maxLat - minLat + padding * 2, 0.005),
       longitudeDelta: Math.max(maxLng - minLng + padding * 2, 0.005),
     }, 500);
+  };
+
+  const toggleSpeaker = () => {
+    const newVal = !speakerEnabled;
+    setSpeaker(newVal);
+    setSpeakerEnabled(newVal);
   };
 
   if (!code) {
@@ -529,6 +607,7 @@ export default function ConvoyScreen() {
         showsUserLocation={false}
         toolbarEnabled={false}
         onLongPress={handleLongPress}
+        onPanDrag={() => { if (trackingModeRef.current !== 'free') setTracking('free'); }}
       >
         {myLocation && (
           <Marker
@@ -593,10 +672,24 @@ export default function ConvoyScreen() {
       {/* Map buttons — only visible on map tab */}
       {activeTab === 'map' && (
         <>
-          <TouchableOpacity style={[styles.centerButton, { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 10 }]} onPress={centerOnMe}>
+          <TouchableOpacity
+            style={[
+              styles.centerButton,
+              { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 10 },
+              trackingMode === 'followMe' && styles.mapButtonActive,
+            ]}
+            onPress={centerOnMe}
+          >
             <Text style={styles.centerIcon}>📍</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.fitAllButton, { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 68 }]} onPress={fitAll}>
+          <TouchableOpacity
+            style={[
+              styles.fitAllButton,
+              { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 68 },
+              trackingMode === 'followAll' && styles.mapButtonActive,
+            ]}
+            onPress={fitAll}
+          >
             <Text style={styles.centerIcon}>👥</Text>
           </TouchableOpacity>
         </>
@@ -663,6 +756,18 @@ export default function ConvoyScreen() {
               </View>
               <Text style={[styles.controlLabel, muted && { color: '#ff4444' }]}>
                 {muted ? 'Muted' : 'Mic'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {voiceActive && (
+            <TouchableOpacity
+              style={[styles.controlButton, speakerEnabled ? styles.controlButtonActive : styles.controlButtonSpeakerOff]}
+              onPress={toggleSpeaker}
+            >
+              <Text style={styles.controlIcon}>{speakerEnabled ? '🔊' : '🔈'}</Text>
+              <Text style={styles.controlLabel}>
+                {speakerEnabled ? 'Speaker' : 'Casti'}
               </Text>
             </TouchableOpacity>
           )}
@@ -761,6 +866,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   centerIcon: { fontSize: 22 },
+  mapButtonActive: { borderColor: '#f4a000', borderWidth: 2 },
 
   bottomOverlay: {
     position: 'absolute',
@@ -788,6 +894,7 @@ const styles = StyleSheet.create({
   controlButtonActive: { borderColor: '#4CAF50' },
   controlButtonMuted: { borderColor: '#ff4444' },
   controlButtonPending: { borderColor: '#f4a000' },
+  controlButtonSpeakerOff: { borderColor: '#888' },
   controlIcon: { fontSize: 24, marginBottom: 4 },
   controlLabel: { color: '#fff', fontSize: 11 },
   leaveBtn: {
