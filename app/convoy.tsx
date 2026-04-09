@@ -17,6 +17,14 @@ import {
   setSpeaker,
 } from '@/lib/webrtc';
 import { addLog, getLogs, clearLogs, subscribeToLogs, LogEntry } from '@/lib/debugLog';
+import {
+  getCrashReports,
+  readCrashReport,
+  clearCrashReports,
+  deleteCrashReport,
+  captureSnapshot,
+  type CrashReport,
+} from '@/lib/crashLogger';
 
 function decodePolyline(encoded: string): LatLng[] {
   if (!encoded || typeof encoded !== 'string') return [];
@@ -101,6 +109,31 @@ export default function ConvoyScreen() {
   const [activeTab, setActiveTab] = useState<'map' | 'debug'>('map');
   const [debugLogs, setDebugLogs] = useState<LogEntry[]>(() => getLogs());
   const logScrollRef = useRef<ScrollView>(null);
+
+  // Debug subview: live logs vs persisted crash reports
+  const [debugView, setDebugView] = useState<'live' | 'reports'>('live');
+  const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
+  const [openedReport, setOpenedReport] = useState<{ name: string; content: string } | null>(null);
+
+  function refreshReports() {
+    setCrashReports(getCrashReports());
+  }
+
+  function openReport(name: string) {
+    setOpenedReport({ name, content: readCrashReport(name) });
+  }
+
+  function fmtReportTime(ms: number | null): string {
+    if (!ms) return '';
+    const d = new Date(ms);
+    return d.toLocaleString();
+  }
+
+  function fmtSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
 
   // Log subscription
   useEffect(() => {
@@ -698,33 +731,142 @@ export default function ConvoyScreen() {
       {/* Debug panel — shown over map when debug tab active */}
       {activeTab === 'debug' && (
         <View style={[styles.debugPanel, { bottom: tabBarTotalHeight + CONTROLS_HEIGHT + 6 }]}>
+          {/* Top row: title + view switch + action */}
           <View style={styles.debugHeader}>
-            <Text style={styles.debugTitle}>Debug ({debugLogs.length} logs)</Text>
-            <TouchableOpacity
-              style={styles.debugClearBtn}
-              onPress={() => { clearLogs(); setDebugLogs([]); }}
-            >
-              <Text style={styles.debugClearText}>Șterge</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView
-            ref={logScrollRef}
-            style={styles.debugScroll}
-            onContentSizeChange={() => logScrollRef.current?.scrollToEnd({ animated: false })}
-          >
-            {debugLogs.length === 0 && (
-              <Text style={styles.debugEmpty}>Niciun log încă. Apasă Voice pentru a testa.</Text>
-            )}
-            {debugLogs.map((entry) => (
-              <View key={entry.id} style={styles.logRow}>
-                <Text style={styles.logTime}>{entry.time}</Text>
-                <Text style={[styles.logCategory, { color: categoryColor(entry.category) }]}>
-                  {entry.category.padEnd(6)}
+            <View style={styles.debugTabs}>
+              <TouchableOpacity
+                style={[styles.debugTabBtn, debugView === 'live' && styles.debugTabBtnActive]}
+                onPress={() => { setDebugView('live'); setOpenedReport(null); }}
+              >
+                <Text style={[styles.debugTabBtnText, debugView === 'live' && styles.debugTabBtnTextActive]}>
+                  Live ({debugLogs.length})
                 </Text>
-                <Text style={styles.logMessage}>{entry.message}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.debugTabBtn, debugView === 'reports' && styles.debugTabBtnActive]}
+                onPress={() => { setDebugView('reports'); refreshReports(); setOpenedReport(null); }}
+              >
+                <Text style={[styles.debugTabBtnText, debugView === 'reports' && styles.debugTabBtnTextActive]}>
+                  Rapoarte{crashReports.length > 0 ? ` (${crashReports.length})` : ''}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {debugView === 'live' ? (
+              <View style={styles.debugHeaderActions}>
+                <TouchableOpacity
+                  style={styles.debugClearBtn}
+                  onPress={() => { captureSnapshot('manual'); refreshReports(); Alert.alert('Salvat', 'Snapshot salvat în rapoarte.'); }}
+                >
+                  <Text style={styles.debugClearText}>Salvează</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.debugClearBtn}
+                  onPress={() => { clearLogs(); setDebugLogs([]); }}
+                >
+                  <Text style={styles.debugClearText}>Șterge</Text>
+                </TouchableOpacity>
               </View>
-            ))}
-          </ScrollView>
+            ) : (
+              <View style={styles.debugHeaderActions}>
+                {openedReport ? (
+                  <TouchableOpacity
+                    style={styles.debugClearBtn}
+                    onPress={() => setOpenedReport(null)}
+                  >
+                    <Text style={styles.debugClearText}>Înapoi</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <>
+                    <TouchableOpacity style={styles.debugClearBtn} onPress={refreshReports}>
+                      <Text style={styles.debugClearText}>Refresh</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.debugClearBtn}
+                      onPress={() => Alert.alert(
+                        'Șterge toate?',
+                        'Toate rapoartele salvate vor fi șterse definitiv.',
+                        [
+                          { text: 'Anulează', style: 'cancel' },
+                          { text: 'Șterge', style: 'destructive', onPress: () => { clearCrashReports(); refreshReports(); } },
+                        ],
+                      )}
+                    >
+                      <Text style={styles.debugClearText}>Șterge tot</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            )}
+          </View>
+
+          {/* Body */}
+          {debugView === 'live' && (
+            <ScrollView
+              ref={logScrollRef}
+              style={styles.debugScroll}
+              onContentSizeChange={() => logScrollRef.current?.scrollToEnd({ animated: false })}
+            >
+              {debugLogs.length === 0 && (
+                <Text style={styles.debugEmpty}>Niciun log încă. Apasă Voice pentru a testa.</Text>
+              )}
+              {debugLogs.map((entry) => (
+                <View key={entry.id} style={styles.logRow}>
+                  <Text style={styles.logTime}>{entry.time}</Text>
+                  <Text style={[styles.logCategory, { color: categoryColor(entry.category) }]}>
+                    {entry.category.padEnd(6)}
+                  </Text>
+                  <Text style={styles.logMessage}>{entry.message}</Text>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+
+          {debugView === 'reports' && !openedReport && (
+            <ScrollView style={styles.debugScroll}>
+              {crashReports.length === 0 && (
+                <Text style={styles.debugEmpty}>
+                  Niciun raport. Crash-urile și sesiunile neterminate vor apărea aici după repornire.
+                </Text>
+              )}
+              {crashReports.map((r) => {
+                const kind = r.name.startsWith('fatal') ? 'CRASH'
+                  : r.name.startsWith('error') ? 'ERR'
+                  : r.name.startsWith('rejection') ? 'REJ'
+                  : r.name.startsWith('snapshot') ? 'SNAP'
+                  : 'PREV';
+                const color = kind === 'CRASH' ? '#f44336'
+                  : kind === 'ERR' ? '#ff9800'
+                  : kind === 'REJ' ? '#ff9800'
+                  : kind === 'SNAP' ? '#4caf50'
+                  : '#888';
+                return (
+                  <View key={r.name} style={styles.reportRow}>
+                    <TouchableOpacity style={{ flex: 1 }} onPress={() => openReport(r.name)}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <Text style={[styles.reportKind, { color }]}>{kind}</Text>
+                        <Text style={styles.reportTime}>{fmtReportTime(r.modificationTime)}</Text>
+                        <Text style={styles.reportSize}>{fmtSize(r.size)}</Text>
+                      </View>
+                      <Text style={styles.reportName} numberOfLines={1}>{r.name}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.reportDeleteBtn}
+                      onPress={() => { deleteCrashReport(r.name); refreshReports(); }}
+                    >
+                      <Text style={styles.reportDeleteText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          )}
+
+          {debugView === 'reports' && openedReport && (
+            <ScrollView style={styles.debugScroll}>
+              <Text style={styles.reportName} numberOfLines={1}>{openedReport.name}</Text>
+              <Text selectable style={styles.reportContent}>{openedReport.content}</Text>
+            </ScrollView>
+          )}
         </View>
       )}
 
@@ -987,6 +1129,59 @@ const styles = StyleSheet.create({
   logTime: { color: '#555', fontSize: 10, marginRight: 6, width: 80 },
   logCategory: { fontSize: 10, fontWeight: 'bold', marginRight: 6, width: 52 },
   logMessage: { color: '#ccc', fontSize: 10, flexShrink: 1 },
+
+  debugTabs: { flexDirection: 'row', gap: 6 },
+  debugHeaderActions: { flexDirection: 'row', gap: 6 },
+  debugTabBtn: {
+    backgroundColor: '#1a1a1a',
+    borderColor: '#333',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  debugTabBtnActive: {
+    backgroundColor: '#2a1f00',
+    borderColor: '#f4a000',
+  },
+  debugTabBtnText: { color: '#888', fontSize: 11, fontWeight: 'bold' },
+  debugTabBtnTextActive: { color: '#f4a000' },
+
+  reportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderBottomColor: '#181818',
+    borderBottomWidth: 1,
+  },
+  reportKind: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    width: 48,
+  },
+  reportTime: { color: '#bbb', fontSize: 11, flex: 1 },
+  reportSize: { color: '#666', fontSize: 10, marginLeft: 6 },
+  reportName: { color: '#777', fontSize: 9, marginTop: 2 },
+  reportContent: {
+    color: '#ccc',
+    fontSize: 10,
+    fontFamily: 'monospace',
+    marginTop: 6,
+    paddingBottom: 20,
+  },
+  reportDeleteBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#1a1a1a',
+    borderColor: '#444',
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  reportDeleteText: { color: '#f44336', fontSize: 14, fontWeight: 'bold' },
 });
 
 function CarIcon({ color }: { color: string }) {

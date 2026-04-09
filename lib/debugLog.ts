@@ -8,6 +8,11 @@ export type LogEntry = {
 let counter = 0;
 const logs: LogEntry[] = [];
 const listeners: Set<() => void> = new Set();
+let persistCallback: (() => void) | null = null;
+
+export function setPersistCallback(cb: (() => void) | null) {
+  persistCallback = cb;
+}
 
 export function addLog(category: string, message: string) {
   const now = new Date();
@@ -19,6 +24,9 @@ export function addLog(category: string, message: string) {
   logs.push(entry);
   if (logs.length > 500) logs.splice(0, logs.length - 500);
   listeners.forEach((cb) => cb());
+  if (persistCallback) {
+    try { persistCallback(); } catch {}
+  }
 }
 
 export function getLogs(): LogEntry[] {

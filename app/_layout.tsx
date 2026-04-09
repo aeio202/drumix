@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { LogBox } from 'react-native';
 import 'react-native-reanimated';
+import { installCrashHandler } from '@/lib/crashLogger';
 
 // Suppress keep-awake error from Expo dev client
 LogBox.ignoreLogs(['Unable to activate keep awake']);
@@ -13,6 +14,10 @@ ErrorUtils.setGlobalHandler((error, isFatal) => {
   if (error?.message?.includes('keep awake')) return;
   originalHandler(error, isFatal);
 });
+
+// Install crash logger AFTER the keep-awake filter so it wraps it
+// (it captures everything our filter passes through and writes to disk).
+installCrashHandler();
 
 const theme = {
   ...DarkTheme,
